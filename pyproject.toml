@@ -1,0 +1,60 @@
+[project]
+name = "contrastive-ft"
+version = "0.1.0"
+description = "CRAFT: Contrastive Representation Aware Fine-Tuning toolkit"
+readme = "README.md"
+authors = [
+  { name = "Omar Kamali (Omneity Labs)", email = "craft@omneitylabs.com" },
+]
+maintainers = [
+  { name = "Omneity Labs", email = "craft@omneitylabs.com" },
+]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = [
+  "torch>=2.1",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+hf = [
+  "transformers>=4.43",
+]
+trl = [
+  "trl>=0.9",
+  "transformers>=4.43",
+]
+peft = [
+  "peft>=0.10",
+  "transformers>=4.43",
+]
+test = [
+  "pytest>=7",
+]
+all = ["contrastive-ft[hf]", "contrastive-ft[trl]", "contrastive-ft[peft]"]
+
+[project.urls]
+Homepage = "https://github.com/omarkamali/craft"
+Repository = "https://github.com/omarkamali/craft"
+Issues = "https://github.com/omarkamali/craft/issues"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/craft"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/craft",
+  "README.md",
+  "pyproject.toml",
+  "tests",
+]
