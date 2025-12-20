@@ -90,6 +90,12 @@ class CRAFTConfigMixin:
             "help": "Handle dataset length mismatch: oversample|cap|auto_beta|error",
         },
     )
+    craft_assistant_mask_key: str | None = field(
+        default="assistant_mask",
+        metadata={
+            "help": "Dataset column providing assistant-token mask for self-align positives.",
+        },
+    )
 
 
 @dataclass

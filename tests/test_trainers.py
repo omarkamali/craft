@@ -51,6 +51,24 @@ class DummyModel(torch.nn.Module):
         return outputs
 
 
+class MaskOptionalDataset(torch.utils.data.Dataset):
+    def __init__(self, include_mask: bool):
+        self.include_mask = include_mask
+
+    def __len__(self):
+        return 4
+
+    def __getitem__(self, idx):
+        batch = {
+            "input_ids": torch.tensor([idx, idx + 1]),
+            "attention_mask": torch.tensor([1, 1]),
+            "labels": torch.tensor([-100, -100]),
+        }
+        if self.include_mask:
+            batch["assistant_mask"] = torch.tensor([0, 1])
+        return batch
+
+
 def test_self_align_strategy_adds_positive_columns():
     dataset = SFTOnlyDataset()
     bundle = make_craft_datasets(dataset, strategy="self_align")
@@ -190,3 +208,102 @@ def test_contrastive_batch_size_override_applied():
             break
     else:  # pragma: no cover - defensive
         pytest.fail("Did not encounter a contrastive batch")
+
+
+def test_custom_loaders_are_respected():
+    dataset = PairedDataset()
+    bundle = make_craft_datasets(dataset, strategy="paired_dataset", contrastive_dataset=dataset)
+
+    def tagged_collator(tag):
+        base = CRAFTCollator()
+
+        def _collate(features):
+            batch = base(features)
+            batch["collate_tag"] = tag
+            return batch
+
+        return _collate
+
+    sft_loader = DataLoader(
+        dataset,
+        batch_size=2,
+        shuffle=False,
+        collate_fn=tagged_collator("sft"),
+    )
+    contrastive_loader = DataLoader(
+        dataset,
+        batch_size=2,
+        shuffle=False,
+        collate_fn=tagged_collator("craft"),
+    )
+
+    config = CRAFTSFTConfig(
+        output_dir="./out",
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=2,
+        craft_alpha=0.5,
+        craft_beta=0.5,
+    )
+
+    trainer = CRAFTSFTTrainer(
+        model=DummyModel(),
+        args=config,
+        train_dataset=dataset,
+        craft_bundle=bundle,
+        craft_sft_loader=sft_loader,
+        craft_contrastive_loader=contrastive_loader,
+    )
+
+    loader = trainer.get_train_dataloader()
+    seen_tags = {"sft": set(), "craft": set()}
+    iterator = iter(loader)
+    for _ in range(4):
+        batch = next(iterator)
+        batch_type = batch["craft_batch_type"]
+        seen_tags[batch_type].add(batch["collate_tag"])
+    assert seen_tags["sft"] == {"sft"}
+    assert seen_tags["craft"] == {"craft"}
+
+
+def test_self_align_validation_requires_labels_or_mask():
+    dataset = MaskOptionalDataset(include_mask=False)
+    bundle = make_craft_datasets(dataset, strategy="self_align")
+
+    config = CRAFTSFTConfig(
+        output_dir="./out",
+        per_device_train_batch_size=2,
+        craft_alpha=0.5,
+        craft_assistant_mask_strategy="auto",
+    )
+
+    trainer = CRAFTSFTTrainer(
+        model=DummyModel(),
+        args=config,
+        train_dataset=dataset,
+        craft_bundle=bundle,
+    )
+
+    with pytest.raises(ValueError):
+        trainer.get_train_dataloader()
+
+
+def test_self_align_validation_accepts_assistant_mask():
+    dataset = MaskOptionalDataset(include_mask=True)
+    bundle = make_craft_datasets(dataset, strategy="self_align")
+
+    config = CRAFTSFTConfig(
+        output_dir="./out",
+        per_device_train_batch_size=2,
+        craft_alpha=0.5,
+    )
+
+    trainer = CRAFTSFTTrainer(
+        model=DummyModel(),
+        args=config,
+        train_dataset=dataset,
+        craft_bundle=bundle,
+    )
+
+    loader = trainer.get_train_dataloader()
+    batch = next(iter(loader))
+    assert batch["craft_batch_type"] == "sft"

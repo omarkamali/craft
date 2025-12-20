@@ -40,6 +40,42 @@ craft/
   └── __init__.py   # Public exports
 ```
 
+## What's New
+
+### Custom Data Loaders
+
+CRAFT now supports custom PyTorch `DataLoader` instances for both SFT and contrastive training, giving you more control over batching, sampling, and collation logic.
+
+```python
+trainer = CRAFTSFTTrainer(
+    model=model,
+    args=args,
+    train_dataset=sft_dataset,  # Still required for length calculations
+    craft_bundle=bundle,
+    craft_sft_loader=custom_sft_loader,          # Custom SFT loader
+    craft_contrastive_loader=custom_contrast_loader  # Custom contrastive loader
+)
+```
+
+### Enhanced Self-align Validation
+
+When using `strategy="self_align"`, CRAFT now performs additional validation to ensure your data is properly formatted:
+
+- Validates presence of either `labels` or `assistant_mask` in SFT batches
+- Ensures at least one token is marked as an assistant token
+- Provides clear error messages for common configuration issues
+
+```python
+# Example of valid self-align batch
+{
+    "input_ids": torch.tensor([...]),
+    "attention_mask": torch.tensor([...]),
+    "labels": torch.tensor([-100, -100, 1234, 5678, -100]),  # Assistant tokens where labels != -100
+    # OR
+    "assistant_mask": torch.tensor([0, 0, 1, 1, 0])  # 1 marks assistant tokens
+}
+```
+
 ## Quick start
 
 ```python

@@ -94,7 +94,7 @@ def ensure_gh_cli() -> None:
 
 
 def main() -> int:
-    print("🚀 Starting picomon publish process...")
+    print("🚀 Starting craft publish process...")
 
     print("🔍 Checking for uncommitted changes...")
     clean, status = git_is_clean()
@@ -139,9 +139,9 @@ def main() -> int:
         tf.write(section)
         notes_path = tf.name
 
-    run(["gh", "release", "create", tag, "--title", f"picomon v{version}", "--notes-file", notes_path])
+    run(["gh", "release", "create", tag, "--title", f"craft v{version}", "--notes-file", notes_path])
 
-    print("🎉 picomon publish process completed successfully!")
+    print("🎉 craft publish process completed successfully!")
     print(f"✨ GitHub Release {tag} created successfully!")
     return 0
 
