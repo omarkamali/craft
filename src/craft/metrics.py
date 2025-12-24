@@ -38,7 +38,8 @@ def update_representation_reference(
     momentum: float = 0.9,
 ) -> torch.Tensor:
     """Exponential moving average of embeddings."""
-
+    
+    cur = current.detach().mean(dim=0)  # [D] - mean pool to single vector
     if prev_reference is None:
-        return current.detach()
-    return momentum * prev_reference + (1 - momentum) * current.detach()
+        return cur
+    return momentum * prev_reference + (1 - momentum) * cur

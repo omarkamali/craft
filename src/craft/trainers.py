@@ -455,12 +455,21 @@ class CRAFTTrainerMixin:
         return_outputs: bool,
         num_items_in_batch: Optional[int],
     ) -> torch.Tensor | Tuple[torch.Tensor, Any]:
-        base_loss, outputs = super().compute_loss(
-            model,
-            inputs,
-            return_outputs=True,
-            num_items_in_batch=num_items_in_batch,
-        )
+        if return_outputs:
+            base_loss, outputs = super().compute_loss(
+                model,
+                inputs,
+                return_outputs=True,
+                num_items_in_batch=num_items_in_batch,
+            )
+        else:
+            base_loss = super().compute_loss(
+                model,
+                inputs,
+                return_outputs=False,
+                num_items_in_batch=num_items_in_batch,
+            )
+            outputs = None
 
         total_loss = self.args.craft_alpha * base_loss
         self._log_craft_losses(sft_loss=base_loss, contrastive_loss=None)
@@ -480,47 +489,97 @@ class CRAFTTrainerMixin:
             inputs
         )
 
-        anchor_outputs = model(
+        # Debug prints before backbone forwards
+        if self.is_world_process_zero():
+            torch.cuda.reset_peak_memory_stats()
+            print(f"[CRAFT][contrastive] anchor_ids: shape={tuple(anchor_ids.shape)} dtype={anchor_ids.dtype} device={anchor_ids.device}")
+            print(f"[CRAFT][contrastive] pos_ids:    shape={tuple(positive_ids.shape)} dtype={positive_ids.dtype} device={positive_ids.device}")
+            print(f"[CRAFT][contrastive] mem(before): alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB")
+
+        # Use backbone-only forwards to bypass LM head
+        if hasattr(model, "get_base_model"):
+            base = model.get_base_model()
+        else:
+            base = model
+
+        backbone = base.model  # HF CausalLM backbone (no lm_head)
+
+        anchor_out = backbone(
             input_ids=anchor_ids,
             attention_mask=anchor_mask,
-            output_hidden_states=True,
+            use_cache=False,
+            return_dict=True,
         )
-
-        positive_outputs = model(
+        pos_out = backbone(
             input_ids=positive_ids,
             attention_mask=positive_mask,
-            output_hidden_states=True,
+            use_cache=False,
+            return_dict=True,
         )
 
-        info_loss, details = self.craft_loss(
-            anchor_outputs.hidden_states[-1],
-            positive_outputs.hidden_states[-1],
-            anchor_mask,
-            positive_mask,
-            return_details=True,
+        anchor_h = anchor_out.last_hidden_state
+        pos_h = pos_out.last_hidden_state
+
+        # Debug prints after backbone forwards
+        if self.is_world_process_zero():
+            print(f"[CRAFT][contrastive] anchor_h: shape={tuple(anchor_h.shape)} dtype={anchor_h.dtype}")
+            print(f"[CRAFT][contrastive] pos_h:    shape={tuple(pos_h.shape)} dtype={pos_h.dtype}")
+            print(f"[CRAFT][contrastive] mem(after fwd): alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB peak={torch.cuda.max_memory_allocated()/1e9:.2f}GB")
+            print(f"[CRAFT][contrastive] anchor_out has logits? {hasattr(anchor_out, 'logits')}")
+
+        # Only request details if we need them for metrics
+        need_details = (
+            "contrastive_accuracy" in self.args.craft_report_metrics
+            or "representation_consistency" in self.args.craft_report_metrics
         )
+        
+        if need_details:
+            info_loss, details = self.craft_loss(
+                anchor_h,
+                pos_h,
+                anchor_mask,
+                positive_mask,
+                return_details=True,
+            )
+        else:
+            info_loss = self.craft_loss(
+                anchor_h,
+                pos_h,
+                anchor_mask,
+                positive_mask,
+                return_details=False,
+            )
+            details = None
 
         total_loss = (1.0 - self.args.craft_alpha) * info_loss
 
         metrics: Dict[str, torch.Tensor] = {}
-        anchor_emb = details["anchor_embeddings"].detach()
-        positive_emb = details["positive_embeddings"].detach()
+        
+        if details is not None:
+            anchor_emb = details["anchor_embeddings"].detach()
+            positive_emb = details["positive_embeddings"].detach()
 
-        if "contrastive_accuracy" in self.args.craft_report_metrics:
-            metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
-                anchor_emb, positive_emb
-            )
+            if "contrastive_accuracy" in self.args.craft_report_metrics:
+                metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
+                    anchor_emb, positive_emb
+                )
 
-        if "representation_consistency" in self.args.craft_report_metrics:
-            metrics["craft_representation_consistency"] = compute_representation_consistency(
-                anchor_emb,
+            if "representation_consistency" in self.args.craft_report_metrics:
+                metrics["craft_representation_consistency"] = compute_representation_consistency(
+                    anchor_emb,
+                    self._craft_reference_embeddings,
+                )
+
+            # Update reference using detached embeddings - use mean-pooled vector
+            self._craft_reference_embeddings = update_representation_reference(
                 self._craft_reference_embeddings,
+                anchor_emb.cpu(),  # Already detached, move to CPU for storage
             )
 
-        self._craft_reference_embeddings = update_representation_reference(
-            self._craft_reference_embeddings,
-            anchor_emb,
-        )
+        # Clean up large tensors to free memory
+        del anchor_out, pos_out, anchor_h, pos_h
+        if details is not None:
+            del anchor_emb, positive_emb
 
         self._log_craft_losses(
             sft_loss=None,

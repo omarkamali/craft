@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2025-12-24
+
+This update tries to address OOM issues by reducing memory usage in contrastive training.
+
+### Fixed
+- Fixed critical OOM issues in contrastive training by eliminating LM head logits generation
+- Replaced full model forwards with backbone-only forwards to bypass LM head (~71.79 GiB savings)
+- Removed `output_hidden_states=True` from contrastive forwards to reduce memory usage
+- Made `return_details=True` conditional - only requested when metrics need it
+- Optimized reference storage to use CPU tensors and mean-pooled vectors instead of batch tensors
+- Added explicit tensor cleanup with `del` statements after contrastive computations
+- Removed logits from loss details dictionary to prevent storing large tensors
+- Added `.detach()` to embeddings in details so metrics don't keep computation graph
+- Added comprehensive debug prints for memory tracking around contrastive forwards
+
 ## [0.2.2] - 2025-12-24
 
 ### Fixed

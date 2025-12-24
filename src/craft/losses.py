@@ -92,9 +92,8 @@ class InfoNCELoss(nn.Module):
             return loss
 
         details = {
-            "anchor_embeddings": proj_anchor,
-            "positive_embeddings": proj_positive,
-            "logits": logits,
+            "anchor_embeddings": proj_anchor.detach(),
+            "positive_embeddings": proj_positive.detach(),
         }
         return loss, details
 
