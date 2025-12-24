@@ -42,7 +42,9 @@ def update_representation_reference(
 ) -> torch.Tensor:
     """Exponential moving average of embeddings."""
     
-    cur = current.detach().mean(dim=0)  # [D] - mean pool to single vector
+    # Detach and clone to fully break computation graph references
+    cur = current.detach().mean(dim=0).clone()  # [D] - mean pool to single vector
     if prev_reference is None:
         return cur
-    return momentum * prev_reference + (1 - momentum) * cur
+    # Clone result to prevent graph accumulation over training
+    return (momentum * prev_reference + (1 - momentum) * cur).clone()

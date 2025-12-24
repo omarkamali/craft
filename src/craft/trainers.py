@@ -667,9 +667,16 @@ class CRAFTTrainerMixin:
                 proj_anchor = self.craft_loss._project(anchor_pooled)
                 self._craft_negative_bank.enqueue(proj_anchor)
 
-        # Clear hook state
+        # Clear hook state and free hidden states to prevent memory leak
         if use_hook:
             self._craft_hidden_hook.clear()
+        
+        # Explicitly delete hidden states reference to free memory sooner
+        # This is critical when output_hidden_states=True as it holds all layer outputs
+        del hidden
+        if not use_hook and hasattr(outputs, 'hidden_states'):
+            # Clear the hidden_states tuple to free memory
+            outputs.hidden_states = None
 
         if return_outputs:
             return total_loss, outputs
@@ -749,6 +756,9 @@ class CRAFTTrainerMixin:
                 output_hidden_states=True,
             )
             anchor_h = self._extract_last_hidden_state(anchor_out)
+            # Free hidden states immediately
+            if hasattr(anchor_out, 'hidden_states'):
+                anchor_out.hidden_states = None
 
             pos_out = backbone(
                 input_ids=positive_ids,
@@ -758,6 +768,9 @@ class CRAFTTrainerMixin:
                 output_hidden_states=True,
             )
             pos_h = self._extract_last_hidden_state(pos_out)
+            # Free hidden states immediately
+            if hasattr(pos_out, 'hidden_states'):
+                pos_out.hidden_states = None
 
         # Compute loss
         need_details = bool(self.args.craft_report_metrics)
@@ -931,7 +944,7 @@ class CRAFTTrainerMixin:
         contrastive_loss: torch.Tensor,
     ) -> None:
         """Compute and log CRAFT metrics."""
-        metrics: Dict[str, torch.Tensor] = {}
+        metrics: Dict[str, float] = {}  # Store floats, not tensors
         report_metrics = getattr(self.args, "craft_report_metrics", [])
 
         with torch.no_grad():
@@ -940,23 +953,23 @@ class CRAFTTrainerMixin:
             proj_positive = self.craft_loss._project(positive_pooled)
 
             if "contrastive_accuracy" in report_metrics:
-                metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
+                metrics["craft_contrastive_accuracy"] = float(compute_contrastive_accuracy(
                     proj_anchor, proj_positive
-                )
+                ).item())
 
             if "representation_consistency" in report_metrics:
-                metrics["craft_representation_consistency"] = compute_representation_consistency(
+                metrics["craft_representation_consistency"] = float(compute_representation_consistency(
                     proj_anchor,
                     self._craft_reference_embeddings,
-                )
+                ).item())
 
             if "temperature" in report_metrics:
-                metrics["craft_temperature"] = self.craft_loss.temperature
+                metrics["craft_temperature"] = float(self.craft_loss.temperature.item())
 
-            # Update reference embeddings
+            # Update reference embeddings - move to CPU and detach fully
             self._craft_reference_embeddings = update_representation_reference(
                 self._craft_reference_embeddings,
-                proj_anchor.cpu(),
+                proj_anchor.detach().cpu(),
             )
 
         self._log_craft_losses(
@@ -973,27 +986,27 @@ class CRAFTTrainerMixin:
         contrastive_loss: torch.Tensor,
     ) -> None:
         """Compute metrics from already-projected embeddings."""
-        metrics: Dict[str, torch.Tensor] = {}
+        metrics: Dict[str, float] = {}  # Store floats, not tensors
         report_metrics = getattr(self.args, "craft_report_metrics", [])
 
         with torch.no_grad():
             if "contrastive_accuracy" in report_metrics:
-                metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
+                metrics["craft_contrastive_accuracy"] = float(compute_contrastive_accuracy(
                     anchor_emb, positive_emb
-                )
+                ).item())
 
             if "representation_consistency" in report_metrics:
-                metrics["craft_representation_consistency"] = compute_representation_consistency(
+                metrics["craft_representation_consistency"] = float(compute_representation_consistency(
                     anchor_emb,
                     self._craft_reference_embeddings,
-                )
+                ).item())
 
             if "temperature" in report_metrics:
-                metrics["craft_temperature"] = self.craft_loss.temperature
+                metrics["craft_temperature"] = float(self.craft_loss.temperature.item())
 
             self._craft_reference_embeddings = update_representation_reference(
                 self._craft_reference_embeddings,
-                anchor_emb.cpu(),
+                anchor_emb.detach().cpu(),
             )
 
         self._log_craft_losses(
@@ -1007,28 +1020,29 @@ class CRAFTTrainerMixin:
         *,
         sft_loss: Optional[torch.Tensor],
         contrastive_loss: Optional[torch.Tensor],
-        metrics: Optional[Dict[str, torch.Tensor]] = None,
+        metrics: Optional[Dict[str, float]] = None,
     ) -> None:
         """Log CRAFT losses and metrics."""
         logs: Dict[str, float] = {}
 
         if sft_loss is not None:
-            logs["loss/craft_sft"] = float(sft_loss.detach().mean())
+            logs["loss/craft_sft"] = float(sft_loss.detach().mean().item())
         if contrastive_loss is not None:
-            logs["loss/craft_contrast"] = float(contrastive_loss.detach().mean())
+            logs["loss/craft_contrast"] = float(contrastive_loss.detach().mean().item())
 
         if logs:
             total = 0.0
             if sft_loss is not None:
-                total += self.args.craft_alpha * float(sft_loss.detach().mean())
+                total += self.args.craft_alpha * logs["loss/craft_sft"]
             if contrastive_loss is not None:
-                total += (1.0 - self.args.craft_alpha) * float(contrastive_loss.detach().mean())
+                total += (1.0 - self.args.craft_alpha) * logs["loss/craft_contrast"]
             logs["loss/craft_total"] = total
 
         if metrics:
             for name, value in metrics.items():
+                # metrics should already be floats now, but handle tensors defensively
                 if isinstance(value, torch.Tensor):
-                    logs[f"metrics/{name}"] = float(value.detach().mean())
+                    logs[f"metrics/{name}"] = float(value.detach().mean().item())
                 else:
                     logs[f"metrics/{name}"] = float(value)
 

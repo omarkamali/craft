@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2025-12-24
+
+### Fixed
+- Fixed memory leak in `_craft_reference_embeddings` EMA update causing OOM during long training runs
+- Fixed hidden states not being freed when using `output_hidden_states=True` fallback path
+- Fixed tensor references in metrics keeping computation graph alive
+
 ## [0.3.0] - 2025-12-24
 
 ### Added
