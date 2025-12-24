@@ -22,12 +22,6 @@ from .metrics import (
     update_representation_reference,
 )
 
-try:  # pragma: no cover - optional dependency
-    from trl import SFTTrainer as _TRL_SFTTrainer
-
-    _CRAFT_HAS_TRL = True
-except ImportError:  # pragma: no cover
-    _CRAFT_HAS_TRL = False
 
 
 class _MissingTRLTrainer:  # type: ignore[too-few-public-methods]
@@ -44,7 +38,15 @@ class _MissingTRLTrainer:  # type: ignore[too-few-public-methods]
         raise ImportError("CRAFT trainers require TRL; install craft[trl].")
 
 
-_TRL_SFTTrainer = _MissingTRLTrainer  # type: ignore[assignment]
+
+
+try:  # pragma: no cover - optional dependency
+    from trl import SFTTrainer as _TRL_SFTTrainer
+
+    _CRAFT_HAS_TRL = True
+except ImportError:  # pragma: no cover
+    _CRAFT_HAS_TRL = False
+    _TRL_SFTTrainer = _MissingTRLTrainer  # type: ignore[assignment]
 
 if _CRAFT_HAS_TRL:
     try:  # pragma: no cover
