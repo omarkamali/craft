@@ -26,6 +26,9 @@ def compute_representation_consistency(
     if reference is None:
         return torch.tensor(float("nan"), device=current.device)
 
+    # Ensure reference is on the same device as current
+    reference = reference.to(current.device)
+    
     current_norm = F.normalize(current, dim=-1, eps=epsilon)
     reference_norm = F.normalize(reference, dim=-1, eps=epsilon)
     return (current_norm * reference_norm).sum(dim=-1).mean()
