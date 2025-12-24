@@ -520,16 +520,18 @@ class CRAFTTrainerMixin:
             attention_mask=anchor_mask,
             use_cache=False,
             return_dict=True,
+            output_hidden_states=True,
         )
         pos_out = backbone(
             input_ids=positive_ids,
             attention_mask=positive_mask,
             use_cache=False,
             return_dict=True,
+            output_hidden_states=True,
         )
 
-        anchor_h = anchor_out.last_hidden_state
-        pos_h = pos_out.last_hidden_state
+        anchor_h = self._extract_last_hidden_state(anchor_out)
+        pos_h = self._extract_last_hidden_state(pos_out)
 
         # Debug prints after backbone forwards
         if self.is_world_process_zero():
@@ -679,6 +681,35 @@ class CRAFTTrainerMixin:
         positive_ids = inputs[positive_id_key]
         positive_mask = inputs[positive_mask_key]
         return anchor_ids, anchor_mask, positive_ids, positive_mask
+
+    @staticmethod
+    def _extract_last_hidden_state(output: Any) -> torch.Tensor:
+        """
+        Return the final hidden state from transformer outputs, even when the
+        object lacks a dedicated ``last_hidden_state`` attribute (e.g. some
+        ``CausalLMOutputWithPast`` instances when using headless backbones).
+        """
+        if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
+            return output.last_hidden_state
+
+        hidden_states = getattr(output, "hidden_states", None)
+        if hidden_states is None:
+            raise AttributeError(
+                "Model output missing last_hidden_state and hidden_states; "
+                "enable hidden state returns via output_hidden_states=True."
+            )
+
+        if isinstance(hidden_states, (list, tuple)):
+            if not hidden_states:
+                raise AttributeError("hidden_states sequence is empty.")
+            return hidden_states[-1]
+
+        if isinstance(hidden_states, torch.Tensor):
+            return hidden_states
+
+        raise TypeError(
+            f"Unsupported hidden_states type: {type(hidden_states)!r}; expected Tensor or sequence of Tensors."
+        )
 
     # ------------------------------------------------------------------
     # Public helpers

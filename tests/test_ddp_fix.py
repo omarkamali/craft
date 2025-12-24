@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+import pytest
 from unittest.mock import Mock
 
 class MockModel:
@@ -38,7 +39,6 @@ def test_ddp_handling():
         backbone = base.model
     
     assert backbone == regular_model.model, "Failed to access .model on regular model"
-    print("✓ Non-DDP model test passed")
     
     # Test 2: DDP-wrapped model with .model attribute
     ddp_model = MockDDPModel(regular_model)
@@ -53,15 +53,9 @@ def test_ddp_handling():
         backbone = base.model
     
     assert backbone == regular_model.model, "Failed to access .model through DDP wrapper"
-    print("✓ DDP-wrapped model test passed")
     
     # Test 3: Config and device access through DDP
     model_to_check = ddp_model.module if hasattr(ddp_model, 'module') else ddp_model
     assert hasattr(model_to_check, 'config'), "Failed to access config through DDP"
     assert hasattr(model_to_check, 'device'), "Failed to access device through DDP"
-    print("✓ DDP config/device access test passed")
-    
-    print("All tests passed! DDP fix is working correctly.")
 
-if __name__ == "__main__":
-    test_ddp_handling()
