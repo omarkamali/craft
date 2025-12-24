@@ -1,6 +1,6 @@
 [project]
 name = "contrastive-ft"
-version = "0.2.4"
+version = "0.2.5"
 description = "CRAFT: Contrastive Representation Aware Fine-Tuning toolkit"
 readme = "README.md"
 authors = [

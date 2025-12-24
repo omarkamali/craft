@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2025-12-24
+
+### Fixed
+- Fixed AttributeError when models return `CausalLMOutputWithPast` without `last_hidden_state` attribute
+- Added `_extract_last_hidden_state` helper method to safely extract hidden states from different model output types
+
 ## [0.2.4] - 2025-12-24
 
 ### Fixed
