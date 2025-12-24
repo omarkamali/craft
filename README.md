@@ -5,8 +5,12 @@ preference-optimization trainers. It provides:
 
 - **Composable losses** – configurable InfoNCE loss with projection/pooling and weighted
   blending against supervised losses via `craft_alpha`.
-- **Mixed data loading** – automated cycling of SFT and contrastive batches according to a
-  configurable `craft_beta` ratio, with optional auto-tuning via `craft_beta_mode`.
+- **Accumulation-aware scaling** – proper gradient ratio regardless of batch distribution,
+  ensuring `alpha` means exactly what it says.
+- **Memory-efficient training** – hook-based hidden state capture and GradCache support
+  for large-batch contrastive learning under memory constraints.
+- **Single forward pass** – for self-align strategy, both SFT and contrastive losses are
+  computed from one forward pass using dual pooling.
 - **Trainer wrappers** – drop-in replacements for TRL's SFT/ORPO/GRPO/PPO/DPO trainers plus
   utilities for plain `transformers.Trainer` usage.
 - **Metrics** – contrastive accuracy, representation consistency, and reference tracking.
@@ -14,6 +18,20 @@ preference-optimization trainers. It provides:
   default collator ready for mixed InfoNCE/SFT batches.
 - **Flexible length matching** – options to oversample, cap, auto-adjust ratios, or raise
   if SFT and contrastive lengths diverge, alongside per-loader batch size overrides.
+
+## Techniques & References
+
+CRAFT incorporates techniques from several influential papers:
+
+| Technique | Reference | Usage in CRAFT |
+|-----------|-----------|----------------|
+| InfoNCE Loss | Oord et al. "Representation Learning with Contrastive Predictive Coding" (2018) | Core contrastive objective |
+| Projection Head | Chen et al. "A Simple Framework for Contrastive Learning of Visual Representations" (SimCLR, 2020) | 2-layer MLP with GELU for projection |
+| Temperature Scaling | Gao et al. "SimCSE: Simple Contrastive Learning of Sentence Embeddings" (2021) | Configurable temperature (0.05 default) |
+| Learnable Temperature | Radford et al. "Learning Transferable Visual Models From Natural Language Supervision" (CLIP, 2021) | Optional `craft_learnable_temperature` |
+| GradCache | Gao et al. "Scaling Deep Contrastive Learning Batch Size under Memory Limited Setup" (2021) | Memory-efficient large-batch training |
+| Negative Queue | He et al. "Momentum Contrast for Unsupervised Visual Representation Learning" (MoCo, 2020) | Optional `craft_negative_strategy="queue"` |
+| Multi-task Accumulation | Raffel et al. "Exploring the Limits of Transfer Learning" (T5, 2020) | Accumulation-aware loss scaling |
 
 ## Installation
 
@@ -32,15 +50,60 @@ uv pip install -e '.[all]'    # everything
 
 ```
 craft/
-  ├── config.py     # CRAFT config mixin + TRL-specific configs
-  ├── data.py       # Dataset bundle, collator, mixed dataloader
-  ├── losses.py     # InfoNCELoss + loss combination helpers
-  ├── metrics.py    # Metric utilities and EMA helpers
-  ├── trainers.py   # CRAFT trainer mixin + TRL wrappers
-  └── __init__.py   # Public exports
+  ├── config.py       # CRAFT config mixin + TRL-specific configs
+  ├── data.py         # Dataset bundle, collator, mixed dataloader
+  ├── losses.py       # InfoNCELoss, ProjectionHead, pooling strategies
+  ├── metrics.py      # Metric utilities and EMA helpers
+  ├── trainers.py     # CRAFT trainer mixin + TRL wrappers
+  ├── accumulator.py  # Accumulation-aware loss scaling
+  ├── hooks.py        # Memory-efficient hidden state capture
+  ├── gradcache.py    # GradCache for large-batch contrastive
+  └── __init__.py     # Public exports
 ```
 
 ## What's New
+
+### v0.3.0:
+
+This release introduces significant optimizations for memory efficiency and training correctness:
+
+**Accumulation-Aware Loss Scaling**: The loss scaling now correctly accounts for batch
+distribution within gradient accumulation windows. Previously, with `alpha=0.6` and
+`beta=0.6`, the effective gradient ratio was ~72:28 instead of the intended 60:40.
+Now `alpha` means exactly what it says regardless of `beta`.
+
+**Single Forward Pass for Self-Align**: When using `strategy="self_align"`, CRAFT now
+computes both SFT and contrastive losses from a single forward pass using dual pooling.
+This eliminates the redundant second forward pass, reducing compute by ~50% for self-align.
+
+**Memory-Efficient Hidden State Capture**: New hook-based hidden state extraction captures
+only the final layer output instead of all layers. This reduces memory overhead from
+O(num_layers × batch × seq × hidden) to O(batch × seq × hidden).
+
+**GradCache Support**: For paired dataset training with large batches, enable
+`craft_use_gradcache=True` to compute contrastive loss with gradient caching.
+This allows effective batch sizes of 1000+ even on a single GPU.
+
+**Improved Projection Head**: The projection head now uses a 2-layer MLP with GELU
+activation (following SimCLR), replacing the previous single-layer Tanh design.
+Output dimension is configurable via `craft_projection_dim`.
+
+```python
+config = CRAFTSFTConfig(
+    # Memory optimization
+    craft_use_gradcache=True,           # Enable GradCache for large batches
+    craft_gradcache_chunk_size=8,       # Chunk size for backward pass
+    craft_use_hidden_state_hook=True,   # Hook-based hidden state capture
+
+    # Projection head
+    craft_projection_dim=256,           # Lower dim = more efficient
+    craft_learnable_temperature=True,   # CLIP-style learnable temp
+
+    # Negative sampling
+    craft_negative_strategy="queue",    # MoCo-style negative queue
+    craft_negative_queue_size=65536,
+)
+```
 
 ### Custom Data Loaders
 

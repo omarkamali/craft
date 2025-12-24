@@ -1,5 +1,26 @@
+"""
+CRAFT Trainers: Contrastive Representation Aware Fine-Tuning.
+
+This module provides trainer mixins and wrappers that combine SFT with
+contrastive learning objectives. Key features:
+
+- Accumulation-aware loss scaling for correct gradient ratios
+- Single forward pass for self-align (dual pooling)
+- GradCache support for memory-efficient paired contrastive
+- Hook-based hidden state capture to reduce memory usage
+
+References:
+- Raffel et al. "Exploring the Limits of Transfer Learning" (T5), 2020
+  - Multi-task gradient accumulation
+- Chen et al. "A Simple Framework for Contrastive Learning" (SimCLR), 2020
+  - Projection head design
+- Gao et al. "Scaling Deep Contrastive Learning Batch Size" (GradCache), 2021
+  - Memory-efficient contrastive learning
+"""
+
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Mapping
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -7,6 +28,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
 
+from .accumulator import CRAFTGradientAccumulator, compute_batch_distribution
 from .config import (
     CRAFTSFTConfig,
     CRAFTORPOConfig,
@@ -15,13 +37,17 @@ from .config import (
     CRAFTDPOConfig,
 )
 from .data import CRAFTCollator, CRAFTDatasetBundle, CRAFTMixedDataLoader, make_craft_datasets
-from .losses import InfoNCELoss
+from .gradcache import CachedEmbeddingBank, GradCacheConfig, GradCacheContrastiveLoss
+from .hooks import LastHiddenStateHook, get_backbone
+from .losses import InfoNCELoss, pool_hidden_states
 from .metrics import (
     compute_contrastive_accuracy,
     compute_representation_consistency,
     update_representation_reference,
 )
 
+
+logger = logging.getLogger(__name__)
 
 
 class _MissingTRLTrainer:  # type: ignore[too-few-public-methods]
@@ -36,8 +62,6 @@ class _MissingTRLTrainer:  # type: ignore[too-few-public-methods]
 
     def log(self, *_, **__):  # pragma: no cover - defensive
         raise ImportError("CRAFT trainers require TRL; install craft[trl].")
-
-
 
 
 try:  # pragma: no cover - optional dependency
@@ -76,7 +100,20 @@ else:  # pragma: no cover
 
 
 class CRAFTTrainerMixin:
-    """Mixin providing CRAFT loss + metrics for TRL trainers."""
+    """
+    Mixin providing CRAFT loss + metrics for TRL trainers.
+
+    This mixin implements:
+    1. Accumulation-aware loss scaling for correct alpha:(1-alpha) ratio
+    2. Single forward pass for self-align with dual pooling
+    3. GradCache support for memory-efficient paired contrastive
+    4. Hook-based hidden state capture
+
+    The key improvement over naive approaches is that gradient accumulation
+    is treated as the combination mechanism, not an afterthought. This ensures
+    the accumulated gradient matches the desired loss ratio regardless of
+    batch distribution.
+    """
 
     craft_bundle: CRAFTDatasetBundle
     craft_collator: CRAFTCollator
@@ -85,6 +122,9 @@ class CRAFTTrainerMixin:
     _craft_reference_embeddings: Optional[torch.Tensor]
     _craft_latest_logs: Dict[str, float]
     _craft_enable_contrastive: bool
+    _craft_accumulator: Optional[CRAFTGradientAccumulator]
+    _craft_hidden_hook: Optional[LastHiddenStateHook]
+    _craft_negative_bank: Optional[CachedEmbeddingBank]
 
     def __init__(
         self,
@@ -120,10 +160,11 @@ class CRAFTTrainerMixin:
         self._craft_post_init()
 
     # ------------------------------------------------------------------
-    # Initialisation helpers
+    # Initialization
     # ------------------------------------------------------------------
 
     def _craft_post_init(self) -> None:
+        """Initialize CRAFT components after parent __init__."""
         primary_dataset = self._resolve_craft_primary_dataset()
 
         if self._craft_user_bundle is not None:
@@ -143,28 +184,41 @@ class CRAFTTrainerMixin:
                 strategy=strategy,
             )
 
-        # FIX 1: Do NOT default craft_collator to self.data_collator.
-        # self.data_collator is typically tuned for SFT (packing/flattening) and must not
-        # be accidentally used for contrastive batches when we auto-build contrastive_loader.
+        # Collator for contrastive batches
         if self._craft_user_collator is not None:
             self.craft_collator = self._craft_user_collator
         else:
             self.craft_collator = CRAFTCollator()
 
-        pooling = getattr(self.args, "craft_pooling", "last_token")
-        # Handle DDP-wrapped models for config access
+        # Get model config
         model_to_check = self.model.module if hasattr(self.model, 'module') else self.model
+        if hasattr(model_to_check, 'get_base_model'):
+            model_to_check = model_to_check.get_base_model()
         hidden_size = getattr(getattr(model_to_check, "config", None), "hidden_size", None)
+
+        # Initialize InfoNCE loss with improved projection head
+        pooling = getattr(self.args, "craft_pooling", "last_token")
+        projection_dim = getattr(self.args, "craft_projection_dim", 256)
+        dropout = getattr(self.args, "craft_projection_dropout", 0.0)
+        learnable_temp = getattr(self.args, "craft_learnable_temperature", False)
 
         self.craft_loss = InfoNCELoss(
             temperature=self.args.craft_temperature,
             pooling=pooling,
             hidden_size=hidden_size,
-        ).to(model_to_check.device)
+            projection_dim=projection_dim,
+            learnable_temperature=learnable_temp,
+            dropout=dropout,
+        ).to(model_to_check.device if hasattr(model_to_check, 'device') else 'cpu')
 
+        # Initialize state
         self._craft_reference_embeddings = None
         self._craft_latest_logs = {}
+        self._craft_accumulator = None  # Initialized in get_train_dataloader
+        self._craft_hidden_hook = None
+        self._craft_negative_bank = None
 
+        # Check if contrastive training is enabled
         self._craft_enable_contrastive = bool(
             getattr(self.args, "craft_alpha", 1.0) < 1.0
             and (
@@ -173,7 +227,27 @@ class CRAFTTrainerMixin:
             )
         )
 
+        # Initialize hook if enabled
+        if self._craft_enable_contrastive and getattr(self.args, "craft_use_hidden_state_hook", True):
+            try:
+                backbone = get_backbone(self.model)
+                self._craft_hidden_hook = LastHiddenStateHook(backbone)
+            except Exception as e:
+                logger.warning(f"Failed to attach hidden state hook: {e}. Falling back to output_hidden_states.")
+                self._craft_hidden_hook = None
+
+        # Initialize negative bank if using queue strategy
+        if self._craft_enable_contrastive and getattr(self.args, "craft_negative_strategy", "in_batch") == "queue":
+            queue_size = getattr(self.args, "craft_negative_queue_size", 65536)
+            proj_dim = getattr(self.args, "craft_projection_dim", 256)
+            self._craft_negative_bank = CachedEmbeddingBank(
+                embedding_dim=proj_dim,
+                bank_size=queue_size,
+                device=model_to_check.device if hasattr(model_to_check, 'device') else torch.device('cpu'),
+            )
+
     def _resolve_craft_primary_dataset(self) -> Any:
+        """Resolve the primary dataset for CRAFT."""
         if getattr(self, "train_dataset", None) is not None:
             return self.train_dataset
         if getattr(self, "dataset", None) is not None:
@@ -181,10 +255,11 @@ class CRAFTTrainerMixin:
         raise ValueError("CRAFT trainer requires a train_dataset or dataset to be provided.")
 
     # ------------------------------------------------------------------
-    # Data loader integration
+    # Data Loader
     # ------------------------------------------------------------------
 
     def get_train_dataloader(self) -> DataLoader:
+        """Build mixed SFT/contrastive dataloader with proper accumulator."""
         base_loader: DataLoader = super().get_train_dataloader()
 
         if not self._craft_enable_contrastive:
@@ -206,6 +281,23 @@ class CRAFTTrainerMixin:
                 "CRAFT length strategy set to 'error' but SFT and contrastive batches differ"
             )
 
+        # Compute batch distribution for accumulator
+        n_sft, n_con = compute_batch_distribution(
+            self.args.craft_beta,
+            self.args.gradient_accumulation_steps,
+        )
+
+        # Initialize accumulator with proper scaling
+        self._craft_accumulator = CRAFTGradientAccumulator(
+            alpha=self.args.craft_alpha,
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            n_sft=n_sft,
+            n_contrastive=n_con,
+        )
+
+        if getattr(self.args, "craft_debug", False):
+            logger.info(f"CRAFT accumulator: {self._craft_accumulator}")
+
         return CRAFTMixedDataLoader(
             sft_loader,
             contrastive_loader,
@@ -221,6 +313,7 @@ class CRAFTTrainerMixin:
         self,
         base_loader: DataLoader,
     ) -> Tuple[DataLoader, Optional[DataLoader], Optional[int], Optional[int]]:
+        """Build SFT and contrastive data loaders."""
         contrastive_dataset = (
             self.craft_bundle.contrastive_dataset
             if self.craft_bundle.contrastive_dataset is not None
@@ -244,7 +337,6 @@ class CRAFTTrainerMixin:
                 raise ValueError("CRAFT requires an SFT loader when contrastive mixing is enabled.")
 
             if contrastive_loader is None:
-                # auto-build contrastive loader; apply packing-guard here
                 contrastive_loader = self._craft_create_default_contrastive_loader(
                     base_loader=base_loader,
                     dataset=contrastive_dataset,
@@ -270,14 +362,13 @@ class CRAFTTrainerMixin:
 
         return sft_loader, contrastive_loader, sft_batches, craft_batches
 
-    # FIX 2: Fail-fast against likely "packing/flattening" collators when auto-building
-    # the contrastive loader (unless user opts in).
     def _craft_create_default_contrastive_loader(
         self,
         *,
         base_loader: DataLoader,
         dataset: Optional[Any],
     ) -> Optional[DataLoader]:
+        """Create default contrastive dataloader."""
         if dataset is None:
             return None
 
@@ -316,10 +407,7 @@ class CRAFTTrainerMixin:
 
     @staticmethod
     def _craft_collator_may_pack(collator: Any) -> bool:
-        """
-        Heuristic guard: catch common packing/flattening collators (e.g., DataCollatorWithFlattening)
-        without importing transformers as a hard dependency.
-        """
+        """Heuristic to detect packing collators."""
         name = type(collator).__name__.lower()
         if "flatten" in name or "packing" in name:
             return True
@@ -336,6 +424,7 @@ class CRAFTTrainerMixin:
         dataset: Optional[Any],
         fallback_batch_size: Optional[int],
     ) -> Optional[int]:
+        """Estimate number of batches in a loader."""
         if loader is None:
             return None
 
@@ -350,6 +439,7 @@ class CRAFTTrainerMixin:
         return self._estimate_batches(dataset, batch_size)
 
     def _craft_validate_self_align_requirements(self, sft_loader: DataLoader) -> None:
+        """Validate that self-align has required data."""
         if self.craft_bundle.strategy != "self_align":
             return
 
@@ -372,17 +462,16 @@ class CRAFTTrainerMixin:
 
         if inspected_batches == 0:
             raise ValueError(
-                "CRAFT strategy='self_align' requires a readable SFT dataloader to validate assistant spans. "
-                "Ensure the dataset implements __len__/__iter__ or supply craft_sft_loader/craft_loader_factory."
+                "CRAFT strategy='self_align' requires a readable SFT dataloader to validate assistant spans."
             )
 
         raise ValueError(
             "CRAFT strategy='self_align' needs either labels (with assistant tokens where labels != -100) "
-            f"or an assistant mask column (key='{mask_key}') in the SFT batches. "
-            "Add one of these fields or disable self_align."
+            f"or an assistant mask column (key='{mask_key}') in the SFT batches."
         )
 
     def _craft_iter_sft_batches(self, loader: DataLoader, *, limit: int):
+        """Iterate over first few batches of a loader."""
         iterator = iter(loader)
         for _ in range(limit):
             try:
@@ -395,6 +484,7 @@ class CRAFTTrainerMixin:
         batch: Mapping[str, Any],
         label_key: Optional[str],
     ) -> bool:
+        """Check if batch has valid labels for self-align."""
         if not label_key or label_key not in batch:
             return False
         tensor = self._craft_as_tensor(batch[label_key])
@@ -407,6 +497,7 @@ class CRAFTTrainerMixin:
         batch: Mapping[str, Any],
         mask_key: Optional[str],
     ) -> bool:
+        """Check if batch has assistant mask."""
         if not mask_key or mask_key not in batch:
             return False
         tensor = self._craft_as_tensor(batch[mask_key])
@@ -416,6 +507,7 @@ class CRAFTTrainerMixin:
 
     @staticmethod
     def _craft_as_tensor(value: Any) -> Optional[torch.Tensor]:
+        """Convert value to tensor if possible."""
         if isinstance(value, torch.Tensor):
             return value.detach()
         try:
@@ -424,7 +516,7 @@ class CRAFTTrainerMixin:
             return None
 
     # ------------------------------------------------------------------
-    # Loss computation
+    # Loss Computation
     # ------------------------------------------------------------------
 
     def compute_loss(
@@ -434,22 +526,38 @@ class CRAFTTrainerMixin:
         return_outputs: bool = False,
         num_items_in_batch: Optional[int] = None,
     ) -> torch.Tensor | Tuple[torch.Tensor, Any]:
+        """
+        Compute CRAFT loss with proper accumulation-aware scaling.
+
+        For self-align strategy, this uses a single forward pass with dual
+        pooling (one for anchor, one for positive based on assistant mask).
+        """
         batch_type = inputs.pop("craft_batch_type", None)
+
         if batch_type != "craft" or not self._craft_enable_contrastive:
-            return self._compute_craft_sft_loss(
+            return self._compute_sft_loss(
                 model,
                 inputs,
                 return_outputs=return_outputs,
                 num_items_in_batch=num_items_in_batch,
             )
 
-        return self._compute_craft_contrastive_loss(
+        # For self-align, use efficient single forward pass
+        if self.craft_bundle.strategy == "self_align":
+            return self._compute_self_align_loss(
+                model,
+                inputs,
+                return_outputs=return_outputs,
+            )
+
+        # For paired dataset, use standard or GradCache approach
+        return self._compute_paired_contrastive_loss(
             model,
             inputs,
             return_outputs=return_outputs,
         )
 
-    def _compute_craft_sft_loss(
+    def _compute_sft_loss(
         self,
         model: torch.nn.Module,
         inputs: Dict[str, torch.Tensor],
@@ -457,6 +565,7 @@ class CRAFTTrainerMixin:
         return_outputs: bool,
         num_items_in_batch: Optional[int],
     ) -> torch.Tensor | Tuple[torch.Tensor, Any]:
+        """Compute SFT loss with proper accumulation scaling."""
         if return_outputs:
             base_loss, outputs = super().compute_loss(
                 model,
@@ -473,175 +582,278 @@ class CRAFTTrainerMixin:
             )
             outputs = None
 
-        total_loss = self.args.craft_alpha * base_loss
+        # Apply accumulation-aware scaling
+        if self._craft_accumulator is not None:
+            total_loss = self._craft_accumulator.scale_sft_loss(base_loss)
+        else:
+            total_loss = self.args.craft_alpha * base_loss
+
         self._log_craft_losses(sft_loss=base_loss, contrastive_loss=None)
 
         if return_outputs:
             return total_loss, outputs
         return total_loss
 
-    def _compute_craft_contrastive_loss(
+    def _compute_self_align_loss(
         self,
         model: torch.nn.Module,
         inputs: Dict[str, torch.Tensor],
         *,
         return_outputs: bool,
     ) -> torch.Tensor | Tuple[torch.Tensor, Any]:
+        """
+        Compute combined SFT + contrastive loss with single forward pass.
+
+        This is the key optimization for self-align: we compute both losses
+        from the same forward pass, using dual pooling (full sequence for
+        anchor, assistant tokens only for positive).
+        """
+        # Single forward pass with hidden states
+        use_hook = self._craft_hidden_hook is not None and self._craft_hidden_hook.is_attached
+
+        if use_hook:
+            # Hook captures hidden state automatically
+            outputs = model(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                labels=inputs.get("labels"),
+                return_dict=True,
+            )
+            hidden = self._craft_hidden_hook.get()
+        else:
+            outputs = model(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                labels=inputs.get("labels"),
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            hidden = self._extract_last_hidden_state(outputs)
+
+        sft_loss = outputs.loss if outputs.loss is not None else torch.tensor(0.0, device=hidden.device)
+
+        # Dual pooling: anchor = full sequence, positive = assistant tokens
+        full_mask = inputs["attention_mask"]
+        assistant_mask = self._derive_assistant_mask(inputs, full_mask)
+
+        pooling = getattr(self.args, "craft_pooling", "last_token")
+        anchor_pooled = pool_hidden_states(hidden, full_mask, pooling)
+        positive_pooled = pool_hidden_states(hidden, assistant_mask, pooling)
+
+        # Compute contrastive loss from pooled representations
+        contrastive_loss = self.craft_loss.forward_from_pooled(
+            anchor_pooled,
+            positive_pooled,
+            additional_negatives=self._get_additional_negatives(),
+        )
+
+        # Apply accumulation-aware scaling
+        if self._craft_accumulator is not None:
+            # For self-align, we have both losses on every step
+            # Scale appropriately for combined loss
+            total_loss = (
+                self._craft_accumulator.scale_sft_loss(sft_loss) +
+                self._craft_accumulator.scale_contrastive_loss(contrastive_loss)
+            )
+        else:
+            total_loss = self.args.craft_alpha * sft_loss + (1 - self.args.craft_alpha) * contrastive_loss
+
+        # Compute and log metrics
+        self._compute_and_log_metrics(anchor_pooled, positive_pooled, sft_loss, contrastive_loss)
+
+        # Update negative bank if using queue strategy
+        if self._craft_negative_bank is not None:
+            with torch.no_grad():
+                proj_anchor = self.craft_loss._project(anchor_pooled)
+                self._craft_negative_bank.enqueue(proj_anchor)
+
+        # Clear hook state
+        if use_hook:
+            self._craft_hidden_hook.clear()
+
+        if return_outputs:
+            return total_loss, outputs
+        return total_loss
+
+    def _compute_paired_contrastive_loss(
+        self,
+        model: torch.nn.Module,
+        inputs: Dict[str, torch.Tensor],
+        *,
+        return_outputs: bool,
+    ) -> torch.Tensor | Tuple[torch.Tensor, Any]:
+        """Compute contrastive loss for paired dataset."""
         anchor_ids, anchor_mask, positive_ids, positive_mask = self._prepare_contrastive_inputs(
             inputs
         )
 
-        # Debug prints before backbone forwards
-        if self.is_world_process_zero():
-            torch.cuda.reset_peak_memory_stats()
-            print(f"[CRAFT][contrastive] anchor_ids: shape={tuple(anchor_ids.shape)} dtype={anchor_ids.dtype} device={anchor_ids.device}")
-            print(f"[CRAFT][contrastive] pos_ids:    shape={tuple(positive_ids.shape)} dtype={positive_ids.dtype} device={positive_ids.device}")
-            print(f"[CRAFT][contrastive] mem(before): alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB")
+        use_gradcache = getattr(self.args, "craft_use_gradcache", False)
 
-        # Use backbone-only forwards to bypass LM head
-        if hasattr(model, "get_base_model"):
-            base = model.get_base_model()
-        else:
-            base = model
-
-        # Handle DDP-wrapped models
-        if hasattr(base, 'module') and hasattr(base, 'model'):
-            # DDP wrapper around a model with .model attribute
-            backbone = base.module.model
-        elif hasattr(base, 'module'):
-            # DDP wrapper around a model without .model attribute
-            backbone = base.module
-        else:
-            # Non-DDP model
-            backbone = base.model  # HF CausalLM backbone (no lm_head)
-
-        anchor_out = backbone(
-            input_ids=anchor_ids,
-            attention_mask=anchor_mask,
-            use_cache=False,
-            return_dict=True,
-            output_hidden_states=True,
-        )
-        pos_out = backbone(
-            input_ids=positive_ids,
-            attention_mask=positive_mask,
-            use_cache=False,
-            return_dict=True,
-            output_hidden_states=True,
-        )
-
-        anchor_h = self._extract_last_hidden_state(anchor_out)
-        pos_h = self._extract_last_hidden_state(pos_out)
-
-        # Debug prints after backbone forwards
-        if self.is_world_process_zero():
-            print(f"[CRAFT][contrastive] anchor_h: shape={tuple(anchor_h.shape)} dtype={anchor_h.dtype}")
-            print(f"[CRAFT][contrastive] pos_h:    shape={tuple(pos_h.shape)} dtype={pos_h.dtype}")
-            print(f"[CRAFT][contrastive] mem(after fwd): alloc={torch.cuda.memory_allocated()/1e9:.2f}GB reserved={torch.cuda.memory_reserved()/1e9:.2f}GB peak={torch.cuda.max_memory_allocated()/1e9:.2f}GB")
-            print(f"[CRAFT][contrastive] anchor_out has logits? {hasattr(anchor_out, 'logits')}")
-
-        # Only request details if we need them for metrics
-        need_details = (
-            "contrastive_accuracy" in self.args.craft_report_metrics
-            or "representation_consistency" in self.args.craft_report_metrics
-        )
-        
-        if need_details:
-            info_loss, details = self.craft_loss(
-                anchor_h,
-                pos_h,
-                anchor_mask,
-                positive_mask,
-                return_details=True,
+        if use_gradcache:
+            contrastive_loss = self._compute_gradcache_loss(
+                anchor_ids, anchor_mask, positive_ids, positive_mask
             )
         else:
-            info_loss = self.craft_loss(
-                anchor_h,
-                pos_h,
-                anchor_mask,
-                positive_mask,
-                return_details=False,
-            )
-            details = None
-
-        total_loss = (1.0 - self.args.craft_alpha) * info_loss
-
-        metrics: Dict[str, torch.Tensor] = {}
-        
-        if details is not None:
-            anchor_emb = details["anchor_embeddings"].detach()
-            positive_emb = details["positive_embeddings"].detach()
-
-            if "contrastive_accuracy" in self.args.craft_report_metrics:
-                metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
-                    anchor_emb, positive_emb
-                )
-
-            if "representation_consistency" in self.args.craft_report_metrics:
-                metrics["craft_representation_consistency"] = compute_representation_consistency(
-                    anchor_emb,
-                    self._craft_reference_embeddings,
-                )
-
-            # Update reference using detached embeddings - use mean-pooled vector
-            self._craft_reference_embeddings = update_representation_reference(
-                self._craft_reference_embeddings,
-                anchor_emb.cpu(),  # Already detached, move to CPU for storage
+            contrastive_loss = self._compute_standard_contrastive_loss(
+                anchor_ids, anchor_mask, positive_ids, positive_mask
             )
 
-        # Clean up large tensors to free memory
-        del anchor_out, pos_out, anchor_h, pos_h
-        if details is not None:
-            del anchor_emb, positive_emb
+        # Apply accumulation-aware scaling
+        if self._craft_accumulator is not None:
+            total_loss = self._craft_accumulator.scale_contrastive_loss(contrastive_loss)
+        else:
+            total_loss = (1.0 - self.args.craft_alpha) * contrastive_loss
 
-        self._log_craft_losses(
-            sft_loss=None,
-            contrastive_loss=info_loss,
-            metrics=metrics,
-        )
+        self._log_craft_losses(sft_loss=None, contrastive_loss=contrastive_loss)
 
         if return_outputs:
             return total_loss, None
         return total_loss
 
-    # ------------------------------------------------------------------
-    # Logging helpers
-    # ------------------------------------------------------------------
-
-    def _log_craft_losses(
+    def _compute_standard_contrastive_loss(
         self,
-        *,
-        sft_loss: Optional[torch.Tensor],
-        contrastive_loss: Optional[torch.Tensor],
-        metrics: Optional[Dict[str, torch.Tensor]] = None,
-    ) -> None:
-        logs: Dict[str, float] = {}
+        anchor_ids: torch.Tensor,
+        anchor_mask: torch.Tensor,
+        positive_ids: torch.Tensor,
+        positive_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute contrastive loss with standard forward passes."""
+        backbone = get_backbone(self.model)
+        use_hook = self._craft_hidden_hook is not None and self._craft_hidden_hook.is_attached
 
-        if sft_loss is not None:
-            logs["loss/craft_sft"] = float(sft_loss.detach().mean())
-        if contrastive_loss is not None:
-            logs["loss/craft_contrast"] = float(contrastive_loss.detach().mean())
+        # Forward passes
+        if use_hook:
+            backbone(
+                input_ids=anchor_ids,
+                attention_mask=anchor_mask,
+                use_cache=False,
+                return_dict=True,
+            )
+            anchor_h = self._craft_hidden_hook.get()
+            self._craft_hidden_hook.clear()
 
-        if logs:
-            total = 0.0
-            if sft_loss is not None:
-                total += self.args.craft_alpha * float(sft_loss.detach().mean())
-            if contrastive_loss is not None:
-                total += (1.0 - self.args.craft_alpha) * float(contrastive_loss.detach().mean())
-            logs["loss/craft_total"] = total
+            backbone(
+                input_ids=positive_ids,
+                attention_mask=positive_mask,
+                use_cache=False,
+                return_dict=True,
+            )
+            pos_h = self._craft_hidden_hook.get()
+            self._craft_hidden_hook.clear()
+        else:
+            anchor_out = backbone(
+                input_ids=anchor_ids,
+                attention_mask=anchor_mask,
+                use_cache=False,
+                return_dict=True,
+                output_hidden_states=True,
+            )
+            anchor_h = self._extract_last_hidden_state(anchor_out)
 
-        if metrics:
-            for name, value in metrics.items():
-                logs[f"metrics/{name}"] = float(value.detach().mean())
+            pos_out = backbone(
+                input_ids=positive_ids,
+                attention_mask=positive_mask,
+                use_cache=False,
+                return_dict=True,
+                output_hidden_states=True,
+            )
+            pos_h = self._extract_last_hidden_state(pos_out)
 
-        if logs:
-            self._craft_latest_logs = logs
-            self.log(logs)
+        # Compute loss
+        need_details = bool(self.args.craft_report_metrics)
+
+        if need_details:
+            loss, details = self.craft_loss(
+                anchor_h,
+                pos_h,
+                anchor_mask,
+                positive_mask,
+                return_details=True,
+                additional_negatives=self._get_additional_negatives(),
+            )
+
+            self._compute_and_log_metrics_from_embeddings(
+                details["anchor_embeddings"],
+                details["positive_embeddings"],
+                None,
+                loss,
+            )
+
+            # Update negative bank
+            if self._craft_negative_bank is not None:
+                self._craft_negative_bank.enqueue(details["anchor_embeddings"])
+        else:
+            loss = self.craft_loss(
+                anchor_h,
+                pos_h,
+                anchor_mask,
+                positive_mask,
+                additional_negatives=self._get_additional_negatives(),
+            )
+
+        return loss
+
+    def _compute_gradcache_loss(
+        self,
+        anchor_ids: torch.Tensor,
+        anchor_mask: torch.Tensor,
+        positive_ids: torch.Tensor,
+        positive_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute contrastive loss using GradCache for memory efficiency."""
+        backbone = get_backbone(self.model)
+        chunk_size = getattr(self.args, "craft_gradcache_chunk_size", 4)
+        pooling = getattr(self.args, "craft_pooling", "last_token")
+
+        def pooling_fn(hidden: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            return pool_hidden_states(hidden, mask, pooling)
+
+        gradcache = GradCacheContrastiveLoss(
+            backbone=backbone,
+            projector=self.craft_loss.projector,
+            pooling_fn=pooling_fn,
+            config=GradCacheConfig(
+                chunk_size=chunk_size,
+                temperature=self.args.craft_temperature,
+            ),
+        )
+
+        return gradcache(anchor_ids, anchor_mask, positive_ids, positive_mask)
+
+    def _derive_assistant_mask(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        full_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Derive assistant token mask for self-align."""
+        mask_strategy = getattr(self.args, "craft_assistant_mask_strategy", "auto")
+        mask_key = getattr(self.args, "craft_assistant_mask_key", "assistant_mask")
+
+        if mask_strategy == "provided" and mask_key in inputs:
+            return inputs[mask_key].long() * full_mask
+
+        if mask_strategy == "none":
+            return full_mask
+
+        # Auto: use labels != -100
+        if "labels" in inputs:
+            labels = inputs["labels"]
+            return (labels != -100).long() * full_mask
+
+        # Fallback to full mask
+        return full_mask
+
+    def _get_additional_negatives(self) -> Optional[torch.Tensor]:
+        """Get additional negatives from queue if available."""
+        if self._craft_negative_bank is None or self._craft_negative_bank.size == 0:
+            return None
+        return self._craft_negative_bank.get_negatives()
 
     def _prepare_contrastive_inputs(
         self,
         inputs: Dict[str, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepare anchor and positive inputs from batch."""
         keys = self.args.craft_contrastive_keys
 
         try:
@@ -684,11 +896,7 @@ class CRAFTTrainerMixin:
 
     @staticmethod
     def _extract_last_hidden_state(output: Any) -> torch.Tensor:
-        """
-        Return the final hidden state from transformer outputs, even when the
-        object lacks a dedicated ``last_hidden_state`` attribute (e.g. some
-        ``CausalLMOutputWithPast`` instances when using headless backbones).
-        """
+        """Extract last hidden state from model output."""
         if hasattr(output, "last_hidden_state") and output.last_hidden_state is not None:
             return output.last_hidden_state
 
@@ -708,20 +916,138 @@ class CRAFTTrainerMixin:
             return hidden_states
 
         raise TypeError(
-            f"Unsupported hidden_states type: {type(hidden_states)!r}; expected Tensor or sequence of Tensors."
+            f"Unsupported hidden_states type: {type(hidden_states)!r}"
         )
 
     # ------------------------------------------------------------------
-    # Public helpers
+    # Metrics & Logging
+    # ------------------------------------------------------------------
+
+    def _compute_and_log_metrics(
+        self,
+        anchor_pooled: torch.Tensor,
+        positive_pooled: torch.Tensor,
+        sft_loss: Optional[torch.Tensor],
+        contrastive_loss: torch.Tensor,
+    ) -> None:
+        """Compute and log CRAFT metrics."""
+        metrics: Dict[str, torch.Tensor] = {}
+        report_metrics = getattr(self.args, "craft_report_metrics", [])
+
+        with torch.no_grad():
+            # Project for metrics
+            proj_anchor = self.craft_loss._project(anchor_pooled)
+            proj_positive = self.craft_loss._project(positive_pooled)
+
+            if "contrastive_accuracy" in report_metrics:
+                metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
+                    proj_anchor, proj_positive
+                )
+
+            if "representation_consistency" in report_metrics:
+                metrics["craft_representation_consistency"] = compute_representation_consistency(
+                    proj_anchor,
+                    self._craft_reference_embeddings,
+                )
+
+            if "temperature" in report_metrics:
+                metrics["craft_temperature"] = self.craft_loss.temperature
+
+            # Update reference embeddings
+            self._craft_reference_embeddings = update_representation_reference(
+                self._craft_reference_embeddings,
+                proj_anchor.cpu(),
+            )
+
+        self._log_craft_losses(
+            sft_loss=sft_loss,
+            contrastive_loss=contrastive_loss,
+            metrics=metrics,
+        )
+
+    def _compute_and_log_metrics_from_embeddings(
+        self,
+        anchor_emb: torch.Tensor,
+        positive_emb: torch.Tensor,
+        sft_loss: Optional[torch.Tensor],
+        contrastive_loss: torch.Tensor,
+    ) -> None:
+        """Compute metrics from already-projected embeddings."""
+        metrics: Dict[str, torch.Tensor] = {}
+        report_metrics = getattr(self.args, "craft_report_metrics", [])
+
+        with torch.no_grad():
+            if "contrastive_accuracy" in report_metrics:
+                metrics["craft_contrastive_accuracy"] = compute_contrastive_accuracy(
+                    anchor_emb, positive_emb
+                )
+
+            if "representation_consistency" in report_metrics:
+                metrics["craft_representation_consistency"] = compute_representation_consistency(
+                    anchor_emb,
+                    self._craft_reference_embeddings,
+                )
+
+            if "temperature" in report_metrics:
+                metrics["craft_temperature"] = self.craft_loss.temperature
+
+            self._craft_reference_embeddings = update_representation_reference(
+                self._craft_reference_embeddings,
+                anchor_emb.cpu(),
+            )
+
+        self._log_craft_losses(
+            sft_loss=sft_loss,
+            contrastive_loss=contrastive_loss,
+            metrics=metrics,
+        )
+
+    def _log_craft_losses(
+        self,
+        *,
+        sft_loss: Optional[torch.Tensor],
+        contrastive_loss: Optional[torch.Tensor],
+        metrics: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> None:
+        """Log CRAFT losses and metrics."""
+        logs: Dict[str, float] = {}
+
+        if sft_loss is not None:
+            logs["loss/craft_sft"] = float(sft_loss.detach().mean())
+        if contrastive_loss is not None:
+            logs["loss/craft_contrast"] = float(contrastive_loss.detach().mean())
+
+        if logs:
+            total = 0.0
+            if sft_loss is not None:
+                total += self.args.craft_alpha * float(sft_loss.detach().mean())
+            if contrastive_loss is not None:
+                total += (1.0 - self.args.craft_alpha) * float(contrastive_loss.detach().mean())
+            logs["loss/craft_total"] = total
+
+        if metrics:
+            for name, value in metrics.items():
+                if isinstance(value, torch.Tensor):
+                    logs[f"metrics/{name}"] = float(value.detach().mean())
+                else:
+                    logs[f"metrics/{name}"] = float(value)
+
+        if logs:
+            self._craft_latest_logs = logs
+            self.log(logs)
+
+    # ------------------------------------------------------------------
+    # Public API
     # ------------------------------------------------------------------
 
     @property
     def craft_metrics(self) -> Dict[str, float]:
-        """Return latest CRAFT metrics that were logged."""
+        """Return latest CRAFT metrics."""
         return dict(self._craft_latest_logs)
 
     @staticmethod
     def _estimate_batches(dataset: Any, batch_size: Optional[int]) -> Optional[int]:
+        """Estimate number of batches from dataset and batch size."""
         try:
             length = len(dataset)
         except TypeError:
@@ -732,6 +1058,10 @@ class CRAFTTrainerMixin:
             return None
         return math.ceil(length / batch_size)
 
+
+# ------------------------------------------------------------------
+# Trainer Classes
+# ------------------------------------------------------------------
 
 class CRAFTSFTTrainer(CRAFTTrainerMixin, _TRL_SFTTrainer):
     args: CRAFTSFTConfig  # type: ignore[assignment]

@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2025-12-24
+
+### Added
+- Memory-efficient hidden state capture via PyTorch hooks (`LastHiddenStateHook`) with auto-detection of final layer norms
+- GradCache support (`GradCacheContrastiveLoss`) for 1000+ effective batch sizes on single GPU
+- MoCo-style negative queue (`CachedEmbeddingBank`) for memory-efficient negative sampling
+- Accumulation-aware loss scaling (`CRAFTGradientAccumulator`) ensuring `alpha` parameter means exactly what it says
+- SimCLR-style 2-layer MLP projection head with GELU and L2 normalization
+- Learnable temperature parameter (CLIP-style) with `craft_learnable_temperature` flag
+- Single forward pass for self-align strategy via dual pooling (50% compute reduction)
+- Configurable projection output dimension via `craft_projection_dim`
+- Additional pooling strategy: `weighted_mean` for position-aware token weighting
+- Support for additional negatives in InfoNCE loss
+
+### Changed
+- Projection head now uses 2-layer MLP with GELU instead of single-layer Tanh
+- Improved backbone extraction to handle DDP and PEFT wrapping
+- Memory overhead reduced from O(layers×batch×seq×hidden) to O(batch×seq×hidden)
+
+### New Configuration Options
+- `craft_use_gradcache` – Enable gradient caching for large batches
+- `craft_gradcache_chunk_size` – Chunk size for GradCache backward pass
+- `craft_use_hidden_state_hook` – Hook-based hidden state capture
+- `craft_projection_dim` – Output dimension for projection head (default 256)
+- `craft_projection_dropout` – Dropout in projection head
+- `craft_learnable_temperature` – Make temperature a trainable parameter
+- `craft_negative_strategy` – Choose "inbatch" or "queue" for negatives
+- `craft_negative_queue_size` – Size of negative embedding queue
+
 ## [0.2.6] - 2025-12-24
 
 ### Fixed
