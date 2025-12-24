@@ -152,13 +152,15 @@ class CRAFTTrainerMixin:
             self.craft_collator = CRAFTCollator()
 
         pooling = getattr(self.args, "craft_pooling", "last_token")
-        hidden_size = getattr(getattr(self.model, "config", None), "hidden_size", None)
+        # Handle DDP-wrapped models for config access
+        model_to_check = self.model.module if hasattr(self.model, 'module') else self.model
+        hidden_size = getattr(getattr(model_to_check, "config", None), "hidden_size", None)
 
         self.craft_loss = InfoNCELoss(
             temperature=self.args.craft_temperature,
             pooling=pooling,
             hidden_size=hidden_size,
-        ).to(self.model.device)
+        ).to(model_to_check.device)
 
         self._craft_reference_embeddings = None
         self._craft_latest_logs = {}
@@ -502,7 +504,16 @@ class CRAFTTrainerMixin:
         else:
             base = model
 
-        backbone = base.model  # HF CausalLM backbone (no lm_head)
+        # Handle DDP-wrapped models
+        if hasattr(base, 'module') and hasattr(base, 'model'):
+            # DDP wrapper around a model with .model attribute
+            backbone = base.module.model
+        elif hasattr(base, 'module'):
+            # DDP wrapper around a model without .model attribute
+            backbone = base.module
+        else:
+            # Non-DDP model
+            backbone = base.model  # HF CausalLM backbone (no lm_head)
 
         anchor_out = backbone(
             input_ids=anchor_ids,
