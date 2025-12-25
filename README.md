@@ -1,8 +1,8 @@
 # CRAFT · Contrastive Representation Aware Fine-Tuning
 
+[![DOI](https://zenodo.org/badge/1119850270.svg)](https://doi.org/10.5281/zenodo.18053757)
 [![PyPI version](https://badge.fury.io/py/contrastive-ft.svg)](https://badge.fury.io/py/contrastive-ft)
 [![CRAFT Tests](https://github.com/omarkamali/craft/actions/workflows/test.yml/badge.svg)](https://github.com/omarkamali/craft/actions/workflows/test.yml)
-[![DOI](https://zenodo.org/badge/1119850270.svg)](https://doi.org/10.5281/zenodo.18053757)
 
 CRAFT is a library and fine-tuning technique that layers a contrastive InfoNCE objective on top of standard SFT and preference-optimization trainers. It provides:
 
@@ -21,6 +21,7 @@ CRAFT is a library and fine-tuning technique that layers a contrastive InfoNCE o
   default collator ready for mixed InfoNCE/SFT batches.
 - **Flexible length matching** – options to oversample, cap, auto-adjust ratios, or raise
   if SFT and contrastive lengths diverge, alongside per-loader batch size overrides.
+
 
 ## Installation
 
@@ -221,6 +222,8 @@ config = CRAFTSFTConfig(
 ```
 
 These knobs are honoured by all `CRAFT*Trainer` classes and the `CRAFTMixedDataLoader`.
+
+Review [the guide for more details](./GUIDE.md).
 
 ## Techniques & References
 
