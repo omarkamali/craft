@@ -62,6 +62,7 @@ def test_craft_trainer_self_align_generates_positive_mask(tokenizer):
         per_device_train_batch_size=2,
         craft_alpha=0.5,
         craft_assistant_mask_strategy="auto",
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -91,6 +92,7 @@ def test_craft_trainer_logs_metrics(tokenizer, monkeypatch):
         gradient_accumulation_steps=4,
         craft_alpha=0.7,
         craft_beta=0.5,
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(

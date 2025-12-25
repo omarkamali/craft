@@ -125,7 +125,7 @@ class TestFromPreset:
     
     def test_from_preset_creates_config(self):
         """from_preset should create a valid config."""
-        config = CRAFTSFTConfig.from_preset("balanced", output_dir="./test")
+        config = CRAFTSFTConfig.from_preset("balanced", output_dir="./test", use_cpu=True)
         
         assert config.output_dir == "./test"
         assert config.craft_alpha == 0.6
@@ -138,6 +138,7 @@ class TestFromPreset:
             output_dir="./test",
             craft_alpha=0.9,
             per_device_train_batch_size=8,
+            use_cpu=True,
         )
         
         assert config.craft_alpha == 0.9  # Overridden
@@ -147,11 +148,11 @@ class TestFromPreset:
     def test_from_preset_all_config_classes(self):
         """All config classes should support from_preset."""
         configs = [
-            CRAFTSFTConfig.from_preset("minimal", output_dir="./test"),
-            CRAFTORPOConfig.from_preset("minimal", output_dir="./test"),
-            CRAFTGRPOConfig.from_preset("minimal", output_dir="./test"),
-            CRAFTPPOConfig.from_preset("minimal", output_dir="./test"),
-            CRAFTDPOConfig.from_preset("minimal", output_dir="./test"),
+            CRAFTSFTConfig.from_preset("minimal", output_dir="./test", use_cpu=True),
+            CRAFTORPOConfig.from_preset("minimal", output_dir="./test", use_cpu=True),
+            CRAFTGRPOConfig.from_preset("minimal", output_dir="./test", use_cpu=True),
+            CRAFTPPOConfig.from_preset("minimal", output_dir="./test", use_cpu=True),
+            CRAFTDPOConfig.from_preset("minimal", output_dir="./test", use_cpu=True),
         ]
         
         for config in configs:
@@ -160,7 +161,7 @@ class TestFromPreset:
     def test_from_preset_unknown_raises(self):
         """Unknown preset should raise ValueError."""
         with pytest.raises(ValueError, match="Unknown preset"):
-            CRAFTSFTConfig.from_preset("nonexistent", output_dir="./test")
+            CRAFTSFTConfig.from_preset("nonexistent", output_dir="./test", use_cpu=True)
 
 
 # =============================================================================
@@ -274,7 +275,7 @@ class TestConfigAuto:
     
     def test_auto_creates_config(self):
         """auto() should create a valid config."""
-        config = CRAFTSFTConfig.auto(output_dir="./test")
+        config = CRAFTSFTConfig.auto(output_dir="./test", use_cpu=True)
         
         assert config.output_dir == "./test"
         assert hasattr(config, "craft_alpha")
@@ -284,6 +285,7 @@ class TestConfigAuto:
         config = CRAFTSFTConfig.auto(
             output_dir="./test",
             model=simple_model,
+            use_cpu=True,
         )
         
         assert config.craft_projection_dim == 192  # 768 // 4
@@ -294,6 +296,7 @@ class TestConfigAuto:
             output_dir="./test",
             model=simple_model,
             craft_projection_dim=512,  # Override auto-detected value
+            use_cpu=True,
         )
         
         assert config.craft_projection_dim == 512
@@ -301,11 +304,11 @@ class TestConfigAuto:
     def test_auto_all_config_classes(self):
         """All config classes should support auto()."""
         configs = [
-            CRAFTSFTConfig.auto(output_dir="./test"),
-            CRAFTORPOConfig.auto(output_dir="./test"),
-            CRAFTGRPOConfig.auto(output_dir="./test"),
-            CRAFTPPOConfig.auto(output_dir="./test"),
-            CRAFTDPOConfig.auto(output_dir="./test"),
+            CRAFTSFTConfig.auto(output_dir="./test", use_cpu=True),
+            CRAFTORPOConfig.auto(output_dir="./test", use_cpu=True),
+            CRAFTGRPOConfig.auto(output_dir="./test", use_cpu=True),
+            CRAFTPPOConfig.auto(output_dir="./test", use_cpu=True),
+            CRAFTDPOConfig.auto(output_dir="./test", use_cpu=True),
         ]
         
         for config in configs:
@@ -324,7 +327,7 @@ class TestPresetsIntegration:
         """All preset values should be valid config attributes."""
         for preset_name in CRAFT_PRESETS:
             # Should not raise
-            config = CRAFTSFTConfig.from_preset(preset_name, output_dir="./test")
+            config = CRAFTSFTConfig.from_preset(preset_name, output_dir="./test", use_cpu=True)
             
             # Verify key attributes are set
             assert hasattr(config, "craft_alpha")
@@ -344,6 +347,7 @@ class TestPresetsIntegration:
             per_device_train_batch_size=4,
             gradient_accumulation_steps=8,
             num_train_epochs=3,
+            use_cpu=True,
         )
         
         # Auto-detected values

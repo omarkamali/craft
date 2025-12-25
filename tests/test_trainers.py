@@ -78,6 +78,7 @@ def test_self_align_strategy_adds_positive_columns(tokenizer):
         per_device_train_batch_size=2,
         craft_alpha=0.5,
         craft_assistant_mask_strategy="auto",
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -108,6 +109,7 @@ def test_contrastive_batch_requires_keys(tokenizer):
         output_dir="./out",
         per_device_train_batch_size=2,
         craft_alpha=0.5,
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -139,6 +141,7 @@ def test_beta_ratio_cycles_batches(tokenizer):
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         craft_beta=0.5,
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -174,6 +177,7 @@ def test_length_strategy_error_raises_on_mismatch(tokenizer):
         per_device_train_batch_size=1,
         craft_beta=0.5,
         craft_length_strategy="error",
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -203,6 +207,7 @@ def test_contrastive_batch_size_override_applied(tokenizer):
         gradient_accumulation_steps=4,
         craft_beta=0.5,
         craft_contrastive_batch_size=4,
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -256,6 +261,7 @@ def test_custom_loaders_are_respected(tokenizer):
         gradient_accumulation_steps=2,
         craft_alpha=0.5,
         craft_beta=0.5,
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
@@ -288,6 +294,7 @@ def test_self_align_validation_requires_labels_or_mask(tokenizer):
         per_device_train_batch_size=2,
         craft_alpha=0.5,
         craft_assistant_mask_strategy="auto",
+        use_cpu=True,
     )
 
     trainer = CRAFTSFTTrainer(
