@@ -376,6 +376,9 @@ class CRAFTTrainerMixin:
         if batch_size is None:
             batch_size = getattr(base_loader, "batch_size", None)
         if batch_size is None:
+            # Fallback to training args batch size (accelerate wraps loaders without batch_size attr)
+            batch_size = getattr(self.args, "per_device_train_batch_size", None)
+        if batch_size is None:
             raise ValueError(
                 "Unable to infer contrastive batch size; please set craft_contrastive_batch_size."
             )
@@ -445,7 +448,7 @@ class CRAFTTrainerMixin:
 
         keys = getattr(self.args, "craft_contrastive_keys", {}) or {}
         label_key = keys.get("anchor_labels", "labels")
-        mask_key = getattr(self.args, "craft_assistant_mask_key", "assistant_mask")
+        mask_key = getattr(self.args, "craft_assistant_mask_key", "assistant_masks")
 
         inspected_batches = 0
         for batch in self._craft_iter_sft_batches(sft_loader, limit=2):
@@ -840,7 +843,7 @@ class CRAFTTrainerMixin:
     ) -> torch.Tensor:
         """Derive assistant token mask for self-align."""
         mask_strategy = getattr(self.args, "craft_assistant_mask_strategy", "auto")
-        mask_key = getattr(self.args, "craft_assistant_mask_key", "assistant_mask")
+        mask_key = getattr(self.args, "craft_assistant_mask_key", "assistant_masks")
 
         if mask_strategy == "provided" and mask_key in inputs:
             return inputs[mask_key].long() * full_mask

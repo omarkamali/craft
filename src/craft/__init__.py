@@ -8,6 +8,9 @@ from .config import (
     CRAFTGRPOConfig,
     CRAFTPPOConfig,
     CRAFTDPOConfig,
+    CRAFT_PRESETS,
+    get_preset,
+    auto_configure,
 )
 from .data import (
     CRAFTDatasetBundle,
@@ -42,6 +45,14 @@ from .gradcache import (
     GradCacheConfig,
     CachedEmbeddingBank,
 )
+from .gradient_balancing import (
+    GradientBalancer,
+    LossScaleBalancer,
+    UncertaintyWeightingBalancer,
+    GradNormBalancer,
+    PCGradBalancer,
+    create_gradient_balancer,
+)
 
 __all__ = [
     # Losses
@@ -55,6 +66,9 @@ __all__ = [
     "CRAFTGRPOConfig",
     "CRAFTPPOConfig",
     "CRAFTDPOConfig",
+    "CRAFT_PRESETS",
+    "get_preset",
+    "auto_configure",
     # Data
     "CRAFTDatasetBundle",
     "CRAFTCollator",
@@ -82,6 +96,13 @@ __all__ = [
     "GradCacheContrastiveLoss",
     "GradCacheConfig",
     "CachedEmbeddingBank",
+    # Gradient Balancing
+    "GradientBalancer",
+    "LossScaleBalancer",
+    "UncertaintyWeightingBalancer",
+    "GradNormBalancer",
+    "PCGradBalancer",
+    "create_gradient_balancer",
 ]
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

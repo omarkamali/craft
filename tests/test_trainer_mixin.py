@@ -1,6 +1,8 @@
 import pytest
 import torch
+from datasets import Dataset
 from torch.utils.data import DataLoader
+from transformers import AutoTokenizer
 
 from craft.config import CRAFTSFTConfig
 from craft.data import CRAFTCollator, make_craft_datasets
@@ -10,31 +12,35 @@ from craft.trainers import CRAFTSFTTrainer
 pytest.importorskip("trl", reason="CRAFT trainers require TRL")
 
 
-class DummyDataset(torch.utils.data.Dataset):
-    def __init__(self, include_targets: bool = True):
-        self.include_targets = include_targets
+@pytest.fixture(scope="module")
+def tokenizer():
+    tok = AutoTokenizer.from_pretrained("gpt2")
+    tok.pad_token = tok.eos_token
+    return tok
 
-    def __len__(self):  # pragma: no cover - constant length
-        return 10
 
-    def __getitem__(self, idx):
-        data = {
-            "input_ids": torch.tensor([idx, idx + 1]),
-            "attention_mask": torch.tensor([1, 1]),
-            "labels": torch.tensor([idx, idx + 1]),
-        }
-        if self.include_targets:
-            data["input_ids_tgt"] = torch.tensor([idx + 1, idx + 2])
-            data["attention_mask_tgt"] = torch.tensor([1, 1])
-        return data
+def make_dummy_dataset(include_targets: bool = True, size: int = 10):
+    data = {
+        "input_ids": [[i, i + 1] for i in range(size)],
+        "attention_mask": [[1, 1] for _ in range(size)],
+        "labels": [[-100, i + 1] for i in range(size)],  # First token masked, second is assistant
+    }
+    if include_targets:
+        data["input_ids_tgt"] = [[i + 1, i + 2] for i in range(size)]
+        data["attention_mask_tgt"] = [[1, 1] for _ in range(size)]
+    return Dataset.from_dict(data)
 
 
 class DummyModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.config = type("Config", (), {"hidden_size": 4})()
+        self.config = type("Config", (), {
+            "hidden_size": 4,
+            "_name_or_path": "gpt2",
+            "_attn_implementation": "eager",
+        })()
 
-    def forward(self, input_ids, attention_mask, labels=None, output_hidden_states=False, **kwargs):
+    def forward(self, input_ids, attention_mask, labels=None, assistant_masks=None, output_hidden_states=False, **kwargs):
         batch, seq = input_ids.shape
         hidden = torch.zeros(batch, seq, self.config.hidden_size)
         # simple deterministic hidden states
@@ -46,8 +52,9 @@ class DummyModel(torch.nn.Module):
         return outputs
 
 
-def test_craft_trainer_self_align_generates_positive_mask():
-    dataset = DummyDataset(include_targets=False)
+def test_craft_trainer_self_align_generates_positive_mask(tokenizer):
+    """Test that self_align generates positive mask during loss computation."""
+    dataset = make_dummy_dataset(include_targets=False)
     bundle = make_craft_datasets(dataset, strategy="self_align")
 
     config = CRAFTSFTConfig(
@@ -63,16 +70,19 @@ def test_craft_trainer_self_align_generates_positive_mask():
         train_dataset=dataset,
         craft_bundle=bundle,
         data_collator=CRAFTCollator(),
+        processing_class=tokenizer,
     )
 
     loader = trainer.get_train_dataloader()
     batch = next(iter(loader))
-    assert "input_ids_tgt" in batch
-    assert "attention_mask_tgt" in batch
+    # Self-align adds positive columns during loss computation, not in dataloader
+    assert batch.get("craft_batch_type") == "craft"
+    loss = trainer.compute_loss(trainer.model, batch)
+    assert torch.isfinite(loss)
 
 
-def test_craft_trainer_logs_metrics(monkeypatch):
-    dataset = DummyDataset()
+def test_craft_trainer_logs_metrics(tokenizer, monkeypatch):
+    dataset = make_dummy_dataset()
     bundle = make_craft_datasets(dataset, strategy="paired_dataset", contrastive_dataset=dataset)
 
     config = CRAFTSFTConfig(
@@ -89,6 +99,7 @@ def test_craft_trainer_logs_metrics(monkeypatch):
         train_dataset=dataset,
         craft_bundle=bundle,
         data_collator=CRAFTCollator(),
+        processing_class=tokenizer,
     )
 
     logs = {}

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-12-25
+
+### Added
+- **Gradient Balancing** module to address gradient dominance (task imbalance) in multi-task training
+  - `LossScaleBalancer`: Simple loss normalization by running mean
+  - `UncertaintyWeightingBalancer`: Homoscedastic uncertainty weighting (Kendall et al., CVPR 2018)
+  - `GradNormBalancer`: Dynamic gradient normalization (Chen et al., ICML 2018)
+  - `PCGradBalancer`: Projecting conflicting gradients (Yu et al., NeurIPS 2020)
+- New config options: `craft_gradient_balancing`, `craft_gradnorm_alpha`, `craft_loss_scale_momentum`, `craft_gradient_clip_per_task`
+- **Presets** for common use cases: `minimal`, `balanced`, `memory_efficient`, `large_batch`, `aggressive`
+- **Auto-configuration** via `CRAFTSFTConfig.auto()` that analyzes model/data to determine optimal settings
+- `from_preset()` and `auto()` class methods on all config classes
+
+### References
+- Chen et al. "GradNorm: Gradient Normalization for Adaptive Loss Balancing" (ICML 2018)
+- Kendall et al. "Multi-Task Learning Using Uncertainty to Weigh Losses" (CVPR 2018)
+- Yu et al. "Gradient Surgery for Multi-Task Learning" (NeurIPS 2020)
+
 ## [0.3.1] - 2025-12-24
 
 ### Fixed

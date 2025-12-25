@@ -32,6 +32,9 @@ CRAFT incorporates techniques from several influential papers:
 | GradCache | Gao et al. "Scaling Deep Contrastive Learning Batch Size under Memory Limited Setup" (2021) | Memory-efficient large-batch training |
 | Negative Queue | He et al. "Momentum Contrast for Unsupervised Visual Representation Learning" (MoCo, 2020) | Optional `craft_negative_strategy="queue"` |
 | Multi-task Accumulation | Raffel et al. "Exploring the Limits of Transfer Learning" (T5, 2020) | Accumulation-aware loss scaling |
+| GradNorm | Chen et al. "Gradient Normalization for Adaptive Loss Balancing" (ICML 2018) | `craft_gradient_balancing="gradnorm"` |
+| Uncertainty Weighting | Kendall et al. "Multi-Task Learning Using Uncertainty to Weigh Losses" (CVPR 2018) | `craft_gradient_balancing="uncertainty"` |
+| PCGrad | Yu et al. "Gradient Surgery for Multi-Task Learning" (NeurIPS 2020) | `craft_gradient_balancing="pcgrad"` |
 
 ## Installation
 
@@ -50,18 +53,45 @@ uv pip install -e '.[all]'    # everything
 
 ```
 craft/
-  ├── config.py       # CRAFT config mixin + TRL-specific configs
-  ├── data.py         # Dataset bundle, collator, mixed dataloader
-  ├── losses.py       # InfoNCELoss, ProjectionHead, pooling strategies
-  ├── metrics.py      # Metric utilities and EMA helpers
-  ├── trainers.py     # CRAFT trainer mixin + TRL wrappers
-  ├── accumulator.py  # Accumulation-aware loss scaling
-  ├── hooks.py        # Memory-efficient hidden state capture
-  ├── gradcache.py    # GradCache for large-batch contrastive
-  └── __init__.py     # Public exports
+  ├── config.py              # CRAFT config mixin + TRL-specific configs
+  ├── data.py                # Dataset bundle, collator, mixed dataloader
+  ├── losses.py              # InfoNCELoss, ProjectionHead, pooling strategies
+  ├── metrics.py             # Metric utilities and EMA helpers
+  ├── trainers.py            # CRAFT trainer mixin + TRL wrappers
+  ├── accumulator.py         # Accumulation-aware loss scaling
+  ├── hooks.py               # Memory-efficient hidden state capture
+  ├── gradcache.py           # GradCache for large-batch contrastive
+  ├── gradient_balancing.py  # Gradient dominance mitigation strategies
+  └── __init__.py            # Public exports
 ```
 
 ## What's New
+
+### v0.4.0: Gradient Balancing & Presets
+
+This release addresses **gradient dominance** and simplifies configuration with presets.
+
+**Gradient Balancing Strategies:**
+- `loss_scale`: Simple loss normalization by running mean (recommended starting point)
+- `uncertainty`: Homoscedastic uncertainty weighting (Kendall et al., CVPR 2018)
+- `gradnorm`: Dynamic gradient normalization (Chen et al., ICML 2018)
+- `pcgrad`: Project conflicting gradients (Yu et al., NeurIPS 2020)
+
+**Presets & Auto-Configuration:**
+```python
+# Start from a preset
+config = CRAFTSFTConfig.from_preset("balanced", output_dir="./outputs")
+
+# Or auto-detect optimal settings
+config = CRAFTSFTConfig.auto(
+    output_dir="./outputs",
+    model=my_model,
+    sft_dataset=train_data,
+    available_memory_gb=16,
+)
+```
+
+Available presets: `minimal`, `balanced`, `memory_efficient`, `large_batch`, `aggressive`
 
 ### v0.3.0:
 

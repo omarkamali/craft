@@ -46,12 +46,24 @@ def make_craft_datasets(
 
 
 class CRAFTCollator:
-    """Default collator for CRAFT batches (delegates to PyTorch)."""
+    """Default collator for CRAFT batches."""
 
     def __call__(self, features: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if not features:
             return {}
-        return default_collate(features)
+        
+        # Collect all keys
+        batch = {}
+        for key in features[0].keys():
+            values = [f[key] for f in features]
+            # Stack tensors or convert lists to tensors
+            if isinstance(values[0], torch.Tensor):
+                batch[key] = torch.stack(values)
+            elif isinstance(values[0], (list, tuple)):
+                batch[key] = torch.tensor(values)
+            else:
+                batch[key] = values
+        return batch
 
 
 class CRAFTMixedDataLoader:
