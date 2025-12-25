@@ -290,4 +290,56 @@ config = CRAFTSFTConfig.auto(
 4. **Can I run preference optimisation (DPO/ORPO/GRPO/PPO) with CRAFT?** Yes—use the matching `CRAFT*Config` + trainer variant. Contrastive batches mix with preference losses exactly like SFT.
 5. **How do I resume?** Resumption works like TRL: as long as you checkpoint the trainer, CRAFT restores projection head weights, beta schedule, and representation references.
 
+## 12. DDP Training Script
+
+The `ddp/train_craft.py` script provides a production-ready multi-GPU training setup with:
+
+- **Multi-source contrastive data**: FLORES+ (curated), NLLB (mined bitext), and semantic similarity datasets
+- **Stratified sampling**: Preserves language/source distribution when limiting samples
+- **QLoRA**: 4-bit quantization with LoRA adapters
+
+### Quick Start
+
+```bash
+# Edit paths in launch_craft.sh, then:
+cd ddp
+./launch_craft.sh
+```
+
+### Key v0.3/v0.4 Options
+
+```bash
+# Memory optimization (v0.3)
+--craft_use_hidden_state_hook true   # Hook-based capture (recommended)
+--craft_use_gradcache true           # Large effective batch sizes
+--craft_gradcache_chunk_size 4       # Smaller = less memory
+--craft_learnable_temperature true   # CLIP-style learnable temp
+--craft_projection_dim 256           # Lower = more efficient
+
+# Gradient balancing (v0.4)
+--craft_gradient_balancing loss_scale  # Prevents gradient dominance
+--craft_loss_scale_momentum 0.99       # EMA momentum
+
+# Alternative: use gradnorm for stronger balancing
+--craft_gradient_balancing gradnorm
+--craft_gradnorm_alpha 1.5
+```
+
+### Contrastive Data Sources
+
+| Source | Description | Quality | Volume |
+|--------|-------------|---------|--------|
+| FLORES+ | Curated parallel sentences | High | ~1k per lang pair |
+| NLLB | Mined bitext (LASER filtered) | Medium-High | Millions |
+| all-nli | NLI entailment pairs | High | ~500k |
+| quora-duplicates | Duplicate questions | High | ~400k |
+| natural-questions | QA pairs | Medium | ~300k |
+
+### Tuning Tips
+
+1. **Start with `loss_scale`** gradient balancing—it's simple and effective
+2. **Enable GradCache** if you want larger effective batch sizes without OOM
+3. **Use `--nllb_min_laser_score 1.25`** or higher for cleaner bitext
+4. **Monitor `loss/craft_contrast`** and `metrics/craft_contrastive_accuracy`—accuracy >0.7 indicates good discrimination
+
 For deeper dives see README quick start and example notebooks under `notebooks/` (especially 02, 03a–c, 04).

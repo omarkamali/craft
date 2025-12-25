@@ -125,6 +125,10 @@ class CRAFTTrainerMixin:
     _craft_accumulator: Optional[CRAFTGradientAccumulator]
     _craft_hidden_hook: Optional[LastHiddenStateHook]
     _craft_negative_bank: Optional[CachedEmbeddingBank]
+    
+    # Loss accumulation for proper logging (not per-micro-batch)
+    _craft_loss_accumulator: Dict[str, float]
+    _craft_loss_counts: Dict[str, int]
 
     def __init__(
         self,
@@ -215,6 +219,10 @@ class CRAFTTrainerMixin:
         self._craft_reference_embeddings = None
         self._craft_latest_logs = {}
         self._craft_accumulator = None  # Initialized in get_train_dataloader
+        
+        # Loss accumulation for proper logging (average over logging_steps, not per-micro-batch)
+        self._craft_loss_accumulator = {}
+        self._craft_loss_counts = {}
         self._craft_hidden_hook = None
         self._craft_negative_bank = None
 
@@ -1025,33 +1033,91 @@ class CRAFTTrainerMixin:
         contrastive_loss: Optional[torch.Tensor],
         metrics: Optional[Dict[str, float]] = None,
     ) -> None:
-        """Log CRAFT losses and metrics."""
-        logs: Dict[str, float] = {}
-
+        """
+        Accumulate CRAFT losses for proper logging.
+        
+        Instead of logging per-micro-batch (which causes wild fluctuations),
+        we accumulate losses and only log averaged values when the trainer
+        logs its main loss. This matches the behavior of the built-in loss
+        logging in Hugging Face Trainer.
+        """
+        # Accumulate losses (not log immediately)
         if sft_loss is not None:
-            logs["loss/craft_sft"] = float(sft_loss.detach().mean().item())
+            val = float(sft_loss.detach().mean().item())
+            self._craft_loss_accumulator["loss/craft_sft"] = (
+                self._craft_loss_accumulator.get("loss/craft_sft", 0.0) + val
+            )
+            self._craft_loss_counts["loss/craft_sft"] = (
+                self._craft_loss_counts.get("loss/craft_sft", 0) + 1
+            )
+            
         if contrastive_loss is not None:
-            logs["loss/craft_contrast"] = float(contrastive_loss.detach().mean().item())
+            val = float(contrastive_loss.detach().mean().item())
+            self._craft_loss_accumulator["loss/craft_contrast"] = (
+                self._craft_loss_accumulator.get("loss/craft_contrast", 0.0) + val
+            )
+            self._craft_loss_counts["loss/craft_contrast"] = (
+                self._craft_loss_counts.get("loss/craft_contrast", 0) + 1
+            )
 
-        if logs:
-            total = 0.0
-            if sft_loss is not None:
-                total += self.args.craft_alpha * logs["loss/craft_sft"]
-            if contrastive_loss is not None:
-                total += (1.0 - self.args.craft_alpha) * logs["loss/craft_contrast"]
-            logs["loss/craft_total"] = total
-
+        # Accumulate additional metrics
         if metrics:
             for name, value in metrics.items():
-                # metrics should already be floats now, but handle tensors defensively
+                key = f"metrics/{name}"
                 if isinstance(value, torch.Tensor):
-                    logs[f"metrics/{name}"] = float(value.detach().mean().item())
-                else:
-                    logs[f"metrics/{name}"] = float(value)
+                    value = float(value.detach().mean().item())
+                self._craft_loss_accumulator[key] = (
+                    self._craft_loss_accumulator.get(key, 0.0) + float(value)
+                )
+                self._craft_loss_counts[key] = (
+                    self._craft_loss_counts.get(key, 0) + 1
+                )
 
-        if logs:
-            self._craft_latest_logs = logs
-            self.log(logs)
+    def _flush_craft_logs(self) -> Dict[str, float]:
+        """
+        Compute averaged losses and reset accumulators.
+        
+        Called by the overridden log() method when the trainer logs.
+        """
+        logs: Dict[str, float] = {}
+        
+        for key, total in self._craft_loss_accumulator.items():
+            count = self._craft_loss_counts.get(key, 1)
+            if count > 0:
+                logs[key] = total / count
+        
+        # Compute weighted total if we have both losses
+        if "loss/craft_sft" in logs or "loss/craft_contrast" in logs:
+            total = 0.0
+            if "loss/craft_sft" in logs:
+                total += self.args.craft_alpha * logs["loss/craft_sft"]
+            if "loss/craft_contrast" in logs:
+                total += (1.0 - self.args.craft_alpha) * logs["loss/craft_contrast"]
+            logs["loss/craft_total"] = total
+        
+        # Store for craft_metrics property
+        self._craft_latest_logs = logs.copy()
+        
+        # Reset accumulators
+        self._craft_loss_accumulator = {}
+        self._craft_loss_counts = {}
+        
+        return logs
+
+    def log(self, logs: Dict[str, float]) -> None:
+        """
+        Override log to inject accumulated CRAFT metrics.
+        
+        This ensures CRAFT losses are logged at the same frequency as the
+        main training loss, properly averaged over the logging window.
+        """
+        # Only flush CRAFT logs when the trainer is logging its main loss
+        # (indicated by presence of 'loss' key, which is the averaged training loss)
+        if "loss" in logs and self._craft_loss_accumulator:
+            craft_logs = self._flush_craft_logs()
+            logs.update(craft_logs)
+        
+        super().log(logs)
 
     # ------------------------------------------------------------------
     # Public API

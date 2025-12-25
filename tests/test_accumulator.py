@@ -67,44 +67,49 @@ class TestCRAFTGradientAccumulator:
     def test_scales_computation(self):
         """Test that scales are computed correctly for equal split."""
         # With alpha=0.6, n_sft=2, n_con=2, total=4
-        # sft_scale = 0.6 * 4 / 2 = 1.2
-        # con_scale = 0.4 * 4 / 2 = 0.8
+        # NEW scaling (without total multiplier, for HF Trainer 4.43+ with PEFT):
+        # sft_scale = 0.6 / 2 = 0.3
+        # con_scale = 0.4 / 2 = 0.2
+        # This ensures: n_sft * sft_scale * loss + n_con * con_scale * loss
+        #             = 2 * 0.3 * loss + 2 * 0.2 * loss = 0.6 * loss + 0.4 * loss ✓
         acc = CRAFTGradientAccumulator(
             alpha=0.6,
             gradient_accumulation_steps=4,
             n_sft=2,
             n_contrastive=2,
         )
-        assert abs(acc.scales.sft_scale - 1.2) < 1e-6
-        assert abs(acc.scales.contrastive_scale - 0.8) < 1e-6
+        assert abs(acc.scales.sft_scale - 0.3) < 1e-6
+        assert abs(acc.scales.contrastive_scale - 0.2) < 1e-6
 
     def test_scales_unequal_split(self):
         """Test scales with unequal batch distribution."""
-        # With alpha=0.6, n_sft=5, n_con=3, total=8
-        # sft_scale = 0.6 * 8 / 5 = 0.96
-        # con_scale = 0.4 * 8 / 3 = 1.0667
+        # With alpha=0.6, n_sft=5, n_con=3
+        # sft_scale = 0.6 / 5 = 0.12
+        # con_scale = 0.4 / 3 = 0.1333
         acc = CRAFTGradientAccumulator(
             alpha=0.6,
             gradient_accumulation_steps=8,
             n_sft=5,
             n_contrastive=3,
         )
-        assert abs(acc.scales.sft_scale - 0.96) < 1e-6
-        assert abs(acc.scales.contrastive_scale - (0.4 * 8 / 3)) < 1e-6
+        assert abs(acc.scales.sft_scale - 0.12) < 1e-6
+        assert abs(acc.scales.contrastive_scale - (0.4 / 3)) < 1e-6
 
     def test_sft_only(self):
         """Test scales when only SFT batches are present."""
+        # When only SFT, scale = alpha / n_sft so total contribution = alpha
         acc = CRAFTGradientAccumulator(
             alpha=0.6,
             gradient_accumulation_steps=4,
             n_sft=4,
             n_contrastive=0,
         )
-        assert acc.scales.sft_scale == 1.0
+        assert abs(acc.scales.sft_scale - 0.6 / 4) < 1e-6  # 0.15
         assert acc.scales.contrastive_scale == 0.0
 
     def test_contrastive_only(self):
         """Test scales when only contrastive batches are present."""
+        # When only contrastive, scale = (1-alpha) / n_con so total contribution = (1-alpha)
         acc = CRAFTGradientAccumulator(
             alpha=0.6,
             gradient_accumulation_steps=4,
@@ -112,7 +117,7 @@ class TestCRAFTGradientAccumulator:
             n_contrastive=4,
         )
         assert acc.scales.sft_scale == 0.0
-        assert acc.scales.contrastive_scale == 1.0
+        assert abs(acc.scales.contrastive_scale - 0.4 / 4) < 1e-6  # 0.1
 
     def test_scale_sft_loss(self):
         """Test scaling SFT loss."""
@@ -124,7 +129,8 @@ class TestCRAFTGradientAccumulator:
         )
         loss = torch.tensor(1.0)
         scaled = acc.scale_sft_loss(loss)
-        assert abs(scaled.item() - 1.2) < 1e-6
+        # sft_scale = 0.6 / 2 = 0.3
+        assert abs(scaled.item() - 0.3) < 1e-6
 
     def test_scale_contrastive_loss(self):
         """Test scaling contrastive loss."""
@@ -136,7 +142,8 @@ class TestCRAFTGradientAccumulator:
         )
         loss = torch.tensor(1.0)
         scaled = acc.scale_contrastive_loss(loss)
-        assert abs(scaled.item() - 0.8) < 1e-6
+        # con_scale = 0.4 / 2 = 0.2
+        assert abs(scaled.item() - 0.2) < 1e-6
 
     def test_update_batch_counts(self):
         """Test updating batch counts dynamically."""

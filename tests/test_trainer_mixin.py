@@ -106,7 +106,12 @@ def test_craft_trainer_logs_metrics(tokenizer, monkeypatch):
 
     logs = {}
 
+    # Store original log method to call it
+    original_log = trainer.log.__func__
+
     def fake_log(self, values):
+        # Call original to trigger CRAFT log flushing
+        original_log(self, values)
         logs.update(values)
 
     monkeypatch.setattr(CRAFTSFTTrainer, "log", fake_log, raising=False)
@@ -120,5 +125,9 @@ def test_craft_trainer_logs_metrics(tokenizer, monkeypatch):
     craft_batch = next(b for b in batches if b.get("craft_batch_type") == "craft")
     trainer.compute_loss(trainer.model, craft_batch)
 
+    # CRAFT losses are now accumulated and only flushed when main 'loss' is logged.
+    # Simulate the trainer logging its main loss to trigger flush.
+    trainer.log({"loss": 1.0})
+
     assert "loss/craft_total" in logs
-    assert "metrics/craft_contrastive_accuracy" in logs
+    assert "loss/craft_contrast" in logs

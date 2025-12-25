@@ -79,8 +79,14 @@ class CRAFTGradientAccumulator:
           G_accum = sum(scale_sft * g_sft_i) + sum(scale_con * g_con_j)
                   = n_sft * scale_sft * avg_g_sft + n_con * scale_con * avg_g_con
         - For this to equal alpha * G_sft + (1-alpha) * G_con:
-          scale_sft = alpha * total_steps / n_sft
-          scale_con = (1-alpha) * total_steps / n_con
+          scale_sft = alpha / n_sft
+          scale_con = (1-alpha) / n_con
+
+        IMPORTANT: Modern HF Trainer (4.43+) with PEFT models does NOT divide
+        the loss by gradient_accumulation_steps when num_items_in_batch is computed.
+        This is because PEFT models have **kwargs in forward, setting
+        model_accepts_loss_kwargs=True. We must account for this by NOT
+        multiplying by total_steps in our scaling.
 
         Note: When either n_sft or n_contrastive is 0, we handle gracefully.
         """
@@ -97,19 +103,19 @@ class CRAFTGradientAccumulator:
             )
 
         if self.n_sft == 0:
-            # Contrastive only
+            # Contrastive only - scale to get (1-alpha) contribution
             return AccumulationScales(
                 sft_scale=0.0,
-                contrastive_scale=1.0,
+                contrastive_scale=(1.0 - self.alpha) / self.n_contrastive,
                 n_sft=0,
                 n_contrastive=self.n_contrastive,
                 effective_alpha=0.0,
             )
 
         if self.n_contrastive == 0:
-            # SFT only
+            # SFT only - scale to get alpha contribution
             return AccumulationScales(
-                sft_scale=1.0,
+                sft_scale=self.alpha / self.n_sft,
                 contrastive_scale=0.0,
                 n_sft=self.n_sft,
                 n_contrastive=0,
@@ -117,8 +123,12 @@ class CRAFTGradientAccumulator:
             )
 
         # Both present - compute proper scales
-        sft_scale = self.alpha * total / self.n_sft
-        con_scale = (1.0 - self.alpha) * total / self.n_contrastive
+        # Each SFT batch contributes: loss * (alpha / n_sft)
+        # Over n_sft batches: n_sft * loss * (alpha / n_sft) = alpha * loss ✓
+        # Each contrastive batch contributes: loss * ((1-alpha) / n_con)
+        # Over n_con batches: n_con * loss * ((1-alpha) / n_con) = (1-alpha) * loss ✓
+        sft_scale = self.alpha / self.n_sft
+        con_scale = (1.0 - self.alpha) / self.n_contrastive
 
         return AccumulationScales(
             sft_scale=sft_scale,

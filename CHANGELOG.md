@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2025-12-25
+
+### Fixed
+- Fixed loss scaling in `CRAFTGradientAccumulator` for HF Trainer 4.43+ with PEFT models
+  - PEFT models have `**kwargs` in forward, preventing HF Trainer from dividing loss by `gradient_accumulation_steps`
+  - Removed `total_steps` multiplier from scaling formula to account for this
+  - Fixes extreme loss fluctuations (8-10 range) during training
+- Fixed CRAFT loss logging to accumulate over logging window instead of per-micro-batch
+  - Losses now properly averaged at same frequency as main training loss
+
 ## [0.4.0] - 2025-12-25
 
 ### Added
