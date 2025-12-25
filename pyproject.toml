@@ -30,6 +30,9 @@ peft = [
 ]
 test = [
   "pytest>=7",
+  "transformers>=4.43",
+  "datasets>=2.0",
+  "trl>=0.9",
 ]
 all = ["contrastive-ft[hf]", "contrastive-ft[trl]", "contrastive-ft[peft]"]
 
