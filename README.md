@@ -1,7 +1,10 @@
 # CRAFT · Contrastive Representation Aware Fine-Tuning
 
-CRAFT is a library that layers a contrastive InfoNCE objective on top of standard SFT and
-preference-optimization trainers. It provides:
+[![PyPI version](https://badge.fury.io/py/contrastive-ft.svg)](https://badge.fury.io/py/contrastive-ft)
+[![CRAFT Tests](https://github.com/omarkamali/craft/actions/workflows/test.yml/badge.svg)](https://github.com/omarkamali/craft/actions/workflows/test.yml)
+[![DOI](https://zenodo.org/badge/1119850270.svg)](https://doi.org/10.5281/zenodo.18053757)
+
+CRAFT is a library and fine-tuning technique that layers a contrastive InfoNCE objective on top of standard SFT and preference-optimization trainers. It provides:
 
 - **Composable losses** – configurable InfoNCE loss with projection/pooling and weighted
   blending against supervised losses via `craft_alpha`.
@@ -19,34 +22,22 @@ preference-optimization trainers. It provides:
 - **Flexible length matching** – options to oversample, cap, auto-adjust ratios, or raise
   if SFT and contrastive lengths diverge, alongside per-loader batch size overrides.
 
-## Techniques & References
-
-CRAFT incorporates techniques from several influential papers:
-
-| Technique | Reference | Usage in CRAFT |
-|-----------|-----------|----------------|
-| InfoNCE Loss | Oord et al. "Representation Learning with Contrastive Predictive Coding" (2018) | Core contrastive objective |
-| Projection Head | Chen et al. "A Simple Framework for Contrastive Learning of Visual Representations" (SimCLR, 2020) | 2-layer MLP with GELU for projection |
-| Temperature Scaling | Gao et al. "SimCSE: Simple Contrastive Learning of Sentence Embeddings" (2021) | Configurable temperature (0.05 default) |
-| Learnable Temperature | Radford et al. "Learning Transferable Visual Models From Natural Language Supervision" (CLIP, 2021) | Optional `craft_learnable_temperature` |
-| GradCache | Gao et al. "Scaling Deep Contrastive Learning Batch Size under Memory Limited Setup" (2021) | Memory-efficient large-batch training |
-| Negative Queue | He et al. "Momentum Contrast for Unsupervised Visual Representation Learning" (MoCo, 2020) | Optional `craft_negative_strategy="queue"` |
-| Multi-task Accumulation | Raffel et al. "Exploring the Limits of Transfer Learning" (T5, 2020) | Accumulation-aware loss scaling |
-| GradNorm | Chen et al. "Gradient Normalization for Adaptive Loss Balancing" (ICML 2018) | `craft_gradient_balancing="gradnorm"` |
-| Uncertainty Weighting | Kendall et al. "Multi-Task Learning Using Uncertainty to Weigh Losses" (CVPR 2018) | `craft_gradient_balancing="uncertainty"` |
-| PCGrad | Yu et al. "Gradient Surgery for Multi-Task Learning" (NeurIPS 2020) | `craft_gradient_balancing="pcgrad"` |
-
 ## Installation
 
 ```bash
-# Editable install with testing extras
-uv pip install -e '.[test]'
+# Install from PyPI
+uv pip install contrastive-ft
 
 # Optional dependency groups
-uv pip install -e '.[trl]'    # TRL trainers
-uv pip install -e '.[hf]'     # transformers integration only
-uv pip install -e '.[peft]'   # LoRA/PEFT examples
-uv pip install -e '.[all]'    # everything
+uv pip install -e 'contrastive-ft[trl]'    # TRL trainers
+uv pip install -e 'contrastive-ft[hf]'     # transformers integration only
+uv pip install -e 'contrastive-ft[peft]'   # LoRA/PEFT examples
+uv pip install -e 'contrastive-ft[all]'    # everything
+
+# Editable install with testing extras for local development
+git clone https://github.com/omarkamali/craft.git
+cd craft
+uv pip install -e '.[test]'
 ```
 
 ## Package layout
@@ -231,6 +222,23 @@ config = CRAFTSFTConfig(
 
 These knobs are honoured by all `CRAFT*Trainer` classes and the `CRAFTMixedDataLoader`.
 
+## Techniques & References
+
+CRAFT incorporates techniques from several influential papers:
+
+| Technique | Reference | Usage in CRAFT |
+|-----------|-----------|----------------|
+| InfoNCE Loss | Oord et al. "Representation Learning with Contrastive Predictive Coding" (2018) | Core contrastive objective |
+| Projection Head | Chen et al. "A Simple Framework for Contrastive Learning of Visual Representations" (SimCLR, 2020) | 2-layer MLP with GELU for projection |
+| Temperature Scaling | Gao et al. "SimCSE: Simple Contrastive Learning of Sentence Embeddings" (2021) | Configurable temperature (0.05 default) |
+| Learnable Temperature | Radford et al. "Learning Transferable Visual Models From Natural Language Supervision" (CLIP, 2021) | Optional `craft_learnable_temperature` |
+| GradCache | Gao et al. "Scaling Deep Contrastive Learning Batch Size under Memory Limited Setup" (2021) | Memory-efficient large-batch training |
+| Negative Queue | He et al. "Momentum Contrast for Unsupervised Visual Representation Learning" (MoCo, 2020) | Optional `craft_negative_strategy="queue"` |
+| Multi-task Accumulation | Raffel et al. "Exploring the Limits of Transfer Learning" (T5, 2020) | Accumulation-aware loss scaling |
+| GradNorm | Chen et al. "Gradient Normalization for Adaptive Loss Balancing" (ICML 2018) | `craft_gradient_balancing="gradnorm"` |
+| Uncertainty Weighting | Kendall et al. "Multi-Task Learning Using Uncertainty to Weigh Losses" (CVPR 2018) | `craft_gradient_balancing="uncertainty"` |
+| PCGrad | Yu et al. "Gradient Surgery for Multi-Task Learning" (NeurIPS 2020) | `craft_gradient_balancing="pcgrad"` |
+
 ## Notebooks
 
 Six notebooks under `packages/craft/notebooks` cover end-to-end workflows:
@@ -258,3 +266,19 @@ uv run python -m pytest -q
 1. Add or update tests for new functionality.
 2. Run the lint/test suite before submitting patches.
 3. Update notebooks and documentation to reflect API changes.
+
+## Citation
+
+If you find CRAFT useful for your research, please cite it as follows:
+
+```bibtex
+@misc{kamali2025craft,
+  title={CRAFT: Contrastive Representation Aware Fine-Tuning},
+  author={Kamali, Omar},
+  year={2025},
+  publisher={Zenodo},
+  doi={10.5281/zenodo.18053757},
+  url={https://doi.org/10.5281/zenodo.18053757},
+  institution={Omneity Labs}
+}
+```
