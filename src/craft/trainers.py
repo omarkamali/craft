@@ -1104,7 +1104,7 @@ class CRAFTTrainerMixin:
         
         return logs
 
-    def log(self, logs: Dict[str, float]) -> None:
+    def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
         """
         Override log to inject accumulated CRAFT metrics.
         
@@ -1117,7 +1117,7 @@ class CRAFTTrainerMixin:
             craft_logs = self._flush_craft_logs()
             logs.update(craft_logs)
         
-        super().log(logs)
+        super().log(logs, start_time)
 
     # ------------------------------------------------------------------
     # Public API
