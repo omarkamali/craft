@@ -1,5 +1,9 @@
 """CRAFT (Contrastive Representation Aware Fine-Tuning) toolkit."""
 
+from importlib.metadata import version
+
+__version__ = version("contrastive-ft")
+
 from .losses import InfoNCELoss, ProjectionHead, pool_hidden_states
 from .config import (
     CRAFTConfigMixin,
@@ -104,5 +108,3 @@ __all__ = [
     "PCGradBalancer",
     "create_gradient_balancer",
 ]
-
-__version__ = "0.4.2"

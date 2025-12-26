@@ -172,8 +172,9 @@ class InfoNCELoss(nn.Module):
         # Temperature can be fixed or learnable
         if learnable_temperature:
             # Initialize log(temperature) for numerical stability
-            # CLIP uses initial value of log(1/0.07) ≈ 2.66
-            self.log_temperature = nn.Parameter(torch.tensor(2.66))
+            # Use the provided temperature value, or CLIP default if not specified
+            initial_log_temp = torch.tensor(float(temperature)).log()
+            self.log_temperature = nn.Parameter(initial_log_temp)
         else:
             self.register_buffer("log_temperature", torch.tensor(float(temperature)).log())
 

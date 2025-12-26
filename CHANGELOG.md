@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2025-12-26
+
+### Fixed
+- Fixed learnable temperature ignoring `craft_temperature` initialization
+  - When `craft_learnable_temperature=True`, temperature now respects the `craft_temperature` argument
+  - Previously always initialized to CLIP default (log(1/0.07)), now uses provided value
+- Disabled gradient checkpointing during GradCache chunked backward to avoid spurious warnings
+
 ## [0.4.2] - 2025-12-26
 
 ### Fixed

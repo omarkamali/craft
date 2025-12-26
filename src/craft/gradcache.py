@@ -197,37 +197,53 @@ class GradCacheContrastiveLoss(nn.Module):
 
         This recomputes activations for small chunks at a time, limiting
         peak memory usage during backward pass.
+        
+        Note: We temporarily disable gradient checkpointing during chunked
+        backward since GradCache already handles memory efficiency through
+        chunking. This avoids the "None of the inputs have requires_grad=True"
+        warning from checkpointing with integer input_ids.
         """
         chunk_size = self.config.chunk_size
         batch_size = anchor_ids.size(0)
 
-        # Process anchor chunks
-        for start in range(0, batch_size, chunk_size):
-            end = min(start + chunk_size, batch_size)
+        # Temporarily disable gradient checkpointing if enabled
+        # GradCache chunking already provides memory efficiency
+        gc_enabled = getattr(self.backbone, 'gradient_checkpointing', False)
+        if gc_enabled:
+            self.backbone.gradient_checkpointing_disable()
 
-            chunk_ids = anchor_ids[start:end]
-            chunk_mask = anchor_mask[start:end]
-            chunk_grad = anchor_grad[start:end]
+        try:
+            # Process anchor chunks
+            for start in range(0, batch_size, chunk_size):
+                end = min(start + chunk_size, batch_size)
 
-            # Recompute with gradients
-            chunk_hidden = self._forward_backbone(chunk_ids, chunk_mask)
-            chunk_pooled = self.pooling_fn(chunk_hidden, chunk_mask)
+                chunk_ids = anchor_ids[start:end]
+                chunk_mask = anchor_mask[start:end]
+                chunk_grad = anchor_grad[start:end]
 
-            # Backward through this chunk
-            chunk_pooled.backward(chunk_grad)
+                # Recompute with gradients
+                chunk_hidden = self._forward_backbone(chunk_ids, chunk_mask)
+                chunk_pooled = self.pooling_fn(chunk_hidden, chunk_mask)
 
-        # Process positive chunks
-        for start in range(0, batch_size, chunk_size):
-            end = min(start + chunk_size, batch_size)
+                # Backward through this chunk
+                chunk_pooled.backward(chunk_grad)
 
-            chunk_ids = positive_ids[start:end]
-            chunk_mask = positive_mask[start:end]
-            chunk_grad = positive_grad[start:end]
+            # Process positive chunks
+            for start in range(0, batch_size, chunk_size):
+                end = min(start + chunk_size, batch_size)
 
-            chunk_hidden = self._forward_backbone(chunk_ids, chunk_mask)
-            chunk_pooled = self.pooling_fn(chunk_hidden, chunk_mask)
+                chunk_ids = positive_ids[start:end]
+                chunk_mask = positive_mask[start:end]
+                chunk_grad = positive_grad[start:end]
 
-            chunk_pooled.backward(chunk_grad)
+                chunk_hidden = self._forward_backbone(chunk_ids, chunk_mask)
+                chunk_pooled = self.pooling_fn(chunk_hidden, chunk_mask)
+
+                chunk_pooled.backward(chunk_grad)
+        finally:
+            # Re-enable gradient checkpointing if it was enabled
+            if gc_enabled:
+                self.backbone.gradient_checkpointing_enable()
 
 
 class CachedEmbeddingBank:
